@@ -27,9 +27,12 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
     : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0) {
 
     // Initialize paths and open files for writing
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-    std::string date_today = std::put_time(std::localtime(&in_time_t), "%Y-%m-%d");
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
+
+    std::ostringstream oss;
+    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-d");
+    std::string date_today = oss.str();
 
     l1FilePath = "data/realtime_original_data/l1_data_" + date_today + ".csv";
     l2FilePath = "data/realtime_original_data/l2_data_" + date_today + ".csv";
@@ -70,6 +73,9 @@ void RealTimeData::connectToIB() {
 }
 
 void RealTimeData::start() {
+    // Clear any existing shared memory object with the same name
+    boost::interprocess::shared_memory_object::remove("RealTimeData");
+    
     // Initialize shared memory
     shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
     shm.truncate(1024);  // Adjust size as needed
@@ -182,9 +188,11 @@ void RealTimeData::processL2Data(int position, double price, Decimal size, int s
     l2Data.push_back(data);
 
     // Write L2 data to file immediately
-    std::ostringstream oss;
-    oss << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S");
-    std::string datetime = oss.str();
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::ostringstream time_oss;
+    time_oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
+    std::string datetime = time_oss.str();
 
     std::ostringstream oss;
     oss << datetime << "," << position << "," << data["BidPrice"] << "," << data["BidSize"] << ","
@@ -225,7 +233,7 @@ void RealTimeData::aggregateMinuteData() {
     double totalL2Volume = 0.0;
 
     for (const auto &data : l2Data) {
-        totalL2Volume += data["BidSize"] + data["AskSize"];
+        totalL2Volume += data.at("BidSize") + data.at("AskSize");
     }
 
     if (!l2Data.empty()) {
@@ -236,8 +244,10 @@ void RealTimeData::aggregateMinuteData() {
     double gap = open - yesterdayClose;
     yesterdayClose = close;  // Update for the next day
 
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
     std::ostringstream oss;
-    oss << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S");
+    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
     // Write aggregated data to combinedDataFile

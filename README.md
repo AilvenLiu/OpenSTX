@@ -94,12 +94,17 @@ Before you can build the project on MacOS, ensure you have the following tools i
    ```bash
    brew install openssl
    ```
-4. **PostgreDB**: Required for secure connections.
+4. **PostgresDB**: Required for secure connections.
 
    ```bash
    brew install libpqxx
    brew install pkg-config
+   brew install postgressql
+   brew install timescaledb
+   brew services start postgresql
    ```
+   
+   Or we suggest to use the cloud TimescaleDB from Amazon Cloud or AliCloud.
 
 5. **GCC or Clang**: Ensure you have an up-to-date C++ compiler. The Apple Clang compiler is typically installed with Xcode.
 

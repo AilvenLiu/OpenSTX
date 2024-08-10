@@ -1,13 +1,16 @@
 cmake_minimum_required(VERSION 3.25)
 project(OpenSTX)
 
-# Set C++ standard to C++17
-set(CMAKE_CXX_STANDARD 17)
+# Set C++ standard
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Set include directories for project headers and API headers
+# Include directories for project headers and API headers
 include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/api/include)
+include_directories("/opt/homebrew/include")
+
+message(STATUS "PROJECT_SOURCE_DIR: ${PROJECT_SOURCE_DIR}")
 
 # Add source files for the main project
 file(GLOB_RECURSE PROJECT_SOURCES 
@@ -21,20 +24,17 @@ file(GLOB_RECURSE PROJECT_SOURCES
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/bin")
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
 
+# Set the path to the TWS API dynamic library
+set(TWS_LIB "${PROJECT_SOURCE_DIR}/api/lib/libib_tws.dylib")
+
 # Add executable target for the project
-add_executable(QuantTrading ${PROJECT_SOURCES})
+add_executable(OpenSTX ${PROJECT_SOURCES})
 
 # Find Boost libraries
 find_package(Boost REQUIRED COMPONENTS system filesystem)
 
 # Find OpenSSL libraries
 find_package(OpenSSL REQUIRED)
-
-# Find and link libpqxx
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(PQXX REQUIRED libpqxx)
-include_directories(${PQXX_INCLUDE_DIRS})
-link_directories(${PQXX_LIBRARY_DIRS})
 
 # Verify Boost presence
 if(Boost_FOUND)
@@ -60,26 +60,23 @@ if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(CMAKE_OSX_ARCHITECTURES "arm64")
 endif()
 
-# Set the path to the TWS API dynamic library
-set(TWS_LIB "${PROJECT_SOURCE_DIR}/api/lib/libib_tws.dylib")
-
 # Link libraries to the executable
-target_link_libraries(QuantTrading
+target_link_libraries(OpenSTX
     ${TWS_LIB}               # Link TWS API library
     ${Boost_LIBRARIES}       # Link Boost libraries
     ${OPENSSL_LIBRARIES}     # Link OpenSSL libraries
-    ${PQXX_LIBRARIES}        # Link pqxx libraries
+    /opt/homebrew/lib/libpqxx.dylib  # Link libpqxx dynamic library
 )
 
 # Installation rules
-install(TARGETS QuantTrading
+install(TARGETS OpenSTX
     RUNTIME DESTINATION bin
 )
 
 # Set compiler options for macOS
 if (APPLE)
     # Enforce use of RPATH to locate shared libraries on macOS
-    set_target_properties(QuantTrading PROPERTIES
+    set_target_properties(OpenSTX PROPERTIES
         INSTALL_RPATH "@loader_path/../lib"
     )
 endif()

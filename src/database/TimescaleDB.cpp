@@ -49,6 +49,9 @@ void TimescaleDB::createTables() {
     try {
         pqxx::work txn(*conn);
 
+        // Enable TimescaleDB extension if not already enabled
+        txn.exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;");
+
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS l1_data (
                 datetime TIMESTAMPTZ PRIMARY KEY,

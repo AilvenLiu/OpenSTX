@@ -19,17 +19,28 @@
  * Date: 2024
  *************************************************************************/
 
+#include <iostream>
+#include <filesystem>
 #include <memory>
+
 #include "Logger.h"
 #include "RealTimeData.h"
 #include "TimescaleDB.h"
 
 int main() {
+    // Specify the log directory and ensure it exists
+    std::string logDir = "logs";
+    if (!std::filesystem::exists(logDir)) {
+        std::filesystem::create_directory(logDir);
+        std::cout << "Created directory: " << logDir << std::endl;
+    }
+    
     // Generate a timestamp for the log file name
-    auto now = std::chrono::system_clock::now();
-    auto in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
+    
     std::ostringstream oss;
-    oss << std::put_time(std::localtime(&now), "%Y-%m-%d");
+    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d");
     std::string timestamp = oss.str();
 
     std::string logFilePath = "logs/realtime_data_" + timestamp + ".log";
@@ -37,7 +48,7 @@ int main() {
     STX_LOGI(logger, "Start main");
 
     // Initialize the TimescaleDB connection
-    std::shared_ptr<TimescaleDB> timescaleDB = std::make_shared<TimescaleDB>("dbname=openstx user=your_user password=your_password");
+    std::shared_ptr<TimescaleDB> timescaleDB = std::make_shared<TimescaleDB>(logger, "openstx", "openstx", "test_password", "localhost", "5432");
 
     // Initialize RealTimeData with logger and TimescaleDB
     std::shared_ptr<RealTimeData> dataCollector = std::make_shared<RealTimeData>(logger, timescaleDB);

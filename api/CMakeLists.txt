@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 project(APILibrary)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 # Set include directories for API headers
 include_directories(${PROJECT_SOURCE_DIR}/include)

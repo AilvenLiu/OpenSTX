@@ -79,6 +79,10 @@ private:
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> timescaleDB;
 
+    OrderId nextOrderId;
+    int requestId;
+    double yesterdayClose;
+
     std::ofstream l1DataFile;
     std::ofstream l2DataFile;    
     std::ofstream combinedDataFile;
@@ -96,19 +100,20 @@ private:
     std::vector<double> l2AskPrices;
     std::vector<Decimal> l2AskSizes;
 
-    OrderId nextOrderId;
-    int requestId;
-    double yesterdayClose;
-
     boost::interprocess::shared_memory_object shm;
     boost::interprocess::mapped_region region;
     std::mutex dataMutex;
 
+private:
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
     void calculateAndStoreFeatures(const std::string &datetime, double open, double high, double low, double close, double volume);
 
 
+    // Unused EWrapper methods, implement to avoid a pure virtual class (but may be used later below)
+    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
+
+private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
     void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
         double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}

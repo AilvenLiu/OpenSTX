@@ -6,6 +6,8 @@ BUILD_DIR="$PROJECT_DIR/build"
 BIN_DIR="$PROJECT_DIR/bin"
 LIB_DIR="$PROJECT_DIR/lib"
 
+echo "Current Direction: $PROJECT_DIR"
+
 # Remove old build directory if it exists
 if [ -d "$BUILD_DIR" ]; then
     echo "Removing old build directory..."
@@ -26,7 +28,7 @@ echo "Compiling the project..."
 make -j8
 
 # Check if executable was built successfully
-EXECUTABLE_FILE="$BIN_DIR/QuantTrading"
+EXECUTABLE_FILE="$BIN_DIR/OpenSTX"
 if [ -f "$EXECUTABLE_FILE" ]; then
     echo "Executable built successfully: $EXECUTABLE_FILE"
 else
