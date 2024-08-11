@@ -1,6 +1,7 @@
 # Open Smart Trading eXpert (OpenSTX)
 
 OpenSTX is an open-source project designed for financial data quantitative analysis, utilizing Interactive Brokers as the primary data source. The project focuses on efficiently requesting, reorganizing, storing, and feature engineering financial data (L1 and L2 data for stocks and options). It leverages advanced deep learning models for quantitative analysis, visualization, automated metric generation, and incremental online learning to provide deeper insights into financial markets. OpenSTX is built to run on Apple Arm Silicon and macOS platforms, aiming to assist professionals in computer and statistical sciences in understanding financial markets through data.
+This project is on its early stage, should be developed continuously. 
 
 ## Project Structure
 
