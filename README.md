@@ -1,118 +1,110 @@
-# Quant Trading Project
+# Open Smart Trading eXpert (OpenSTX)
 
-This is a quantitative trading project that leverages C++ for high-performance components and Python for data analysis and visualization. The project is modular, with distinct components for API integration, data handling, logging, and real-time data fetching.
+OpenSTX is an open-source project designed for financial data quantitative analysis, utilizing Interactive Brokers as the primary data source. The project focuses on efficiently requesting, reorganizing, storing, and feature engineering financial data (L1 and L2 data for stocks and options). It leverages advanced deep learning models for quantitative analysis, visualization, automated metric generation, and incremental online learning to provide deeper insights into financial markets. OpenSTX is built to run on Apple Arm Silicon and macOS platforms, aiming to assist professionals in computer and statistical sciences in understanding financial markets through data.
 
 ## Project Structure
 
 ```plaintext
-quant_trading
-├── CMakeLists.txt
-├── LICENSE
-├── api
-│   ├── CMakeLists.txt
-│   ├── include
-│   ├── make.sh
-│   └── src
+OpenSTX
+├── bin
+├── build
 ├── data
 │   ├── analysis_pic
 │   ├── daily_data
 │   └── original_data
 ├── documents
 ├── include
-├── requirements.txt
-└── src
-    ├── data
-    ├── logger
-    └── main.cpp
+├── src
+│   ├── data
+│   ├── database
+│   └── logger
+├── test
+│   └── build
+└── third_parts
+    ├── ib_tws
+    └── libpqxx
 ```
 
 ### Directory Breakdown
 
-- **CMakeLists.txt**: The root-level CMake configuration file that ties together all sub-projects.
-
-- **LICENSE**: License information for the project.
-
-- **api/**: Contains the source and header files for the Interactive Brokers API integration.
-
-  - **include/**: Header files for the API.
-  
-  - **src/**: Source files implementing the API functionality.
-  
-  - **CMakeLists.txt**: CMake configuration for building the API as a dynamic library.
-  
-  - **make.sh**: Shell script for building the API.
-
-- **data/**: Contains data files used by the project.
-
+- **bin/**: Contains the compiled binaries.
+- **build/**: Used during the build process to store temporary files.
+- **data/**: Houses data files used by the project.
   - **analysis_pic/**: Images and plots generated from data analysis.
-  
   - **daily_data/**: Processed daily data files.
-  
-  - **original_data/**: Original raw data files.
-
-- **documents/**: Documentation files related to the project.
-
+  - **original_data/**: Raw data files.
+- **documents/**: Documentation related to the project.
 - **include/**: General header files used across different modules in the project.
+- **src/**: Contains the source files for the application.
+  - **data/**: C++ and Python files for data handling.
+  - **database/**: Database handling code, including integration with TimescaleDB.
+  - **logger/**: Source files for the logging module.
+- **test/**: Contains test files for the application.
+- **third_parts/**: External libraries used by the project.
+  - **ib_tws/**: Integration with Interactive Brokers TWS API.
+  - **libpqxx/**: PostgreSQL C++ client library (libpqxx).
 
-- **requirements.txt**: Lists Python dependencies needed for the project.
+### Key Files
 
-- **src/**: Source files for the application.
+- **CMakeLists.txt**: The root-level CMake configuration file for building the project.
+- **make.sh**: A shell script for building the project.
+- **LICENSE**: Project licensing information.
 
-  - **data/**: Contains C++ and Python files related to data handling.
-  
-  - **logger/**: Contains source files for the logging module.
-  
-  - **main.cpp**: Main entry point of the application.
+## Building Third-Party Libraries
 
-## Building the Project on MacOS
+### libpqxx
+
+For detailed instructions on building `libpqxx`, please refer to [third_parts/libpqxx/README.md](third_parts/libpqxx/README.md).
+
+### IB TWS API
+
+For detailed instructions on building the Interactive Brokers TWS API, please refer to [third_parts/ib_tws/README.md](third_parts/ib_tws/README.md).
+
+## Building the Application & Running the Application
 
 ### Prerequisites
 
-Before you can build the project on MacOS, ensure you have the following tools installed:
+Before building the project on macOS, ensure you have the following tools installed:
 
-1. **Homebrew**: A package manager for MacOS. Install it if you haven't already:
-
+1. **Homebrew**: A package manager for macOS.
    ```bash
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
 
 2. **CMake**: Required for building C++ projects.
-
    ```bash
    brew install cmake
    ```
-   Should use c++17 standard.
 
-3. **Boost**: A set of libraries for C++.
-
+3. **Boost**: A set of C++ libraries.
    ```bash
    brew install boost
    ```
 
 4. **OpenSSL**: Required for secure connections.
-
    ```bash
    brew install openssl
    ```
-4. **PostgresDB**: Required for secure connections.
 
+5. **PostgreSQL and TimescaleDB**: For database integration.
    ```bash
-   brew install libpqxx
-   brew install pkg-config
-   brew install postgressql
+   brew install libpq
+   brew install postgresql
    brew install timescaledb
    brew services start postgresql
    ```
-   
-   Or we suggest to use the cloud TimescaleDB from Amazon Cloud or AliCloud.
+   You may also use a cloud-based TimescaleDB from Amazon Cloud or AliCloud.
 
-5. **GCC or Clang**: Ensure you have an up-to-date C++ compiler. The Apple Clang compiler is typically installed with Xcode.
+6. **GCC or Clang**: Ensure you have an up-to-date C++ compiler, typically provided with Xcode on macOS.
 
-6. **Python**: Ensure Python is installed for running Python scripts.
+7. **Python**: Required for running Python scripts.
+   ```bash
+   brew install python
+   ```
 
 ### Configuring Environment Variables
 
-Ensure that the OpenSSL libraries are correctly linked during the build process. You might need to set the following environment variables:
+Ensure that OpenSSL libraries are correctly linked:
 
 ```bash
 export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
@@ -120,172 +112,38 @@ export OPENSSL_LIBRARIES=$(brew --prefix openssl)/lib
 export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
 ```
 
-### Modifying `Decimal.h` to Avoid `libbid` Errors
-
-When compiling on MacOS with Apple Silicon (M1 or M2), you might encounter errors related to `libbid`. This is due to missing BID decimal functions. You can modify the `Decimal.h` file to remove the dependency on `libbid` and use standard C++ operations instead.
-
-Here’s how you can modify `Decimal.h`:
-
-#### Original `Decimal.h`
-
-```cpp
-extern "C" Decimal __bid64_add(Decimal, Decimal, unsigned int, unsigned int*);
-extern "C" Decimal __bid64_sub(Decimal, Decimal, unsigned int, unsigned int*);
-extern "C" Decimal __bid64_mul(Decimal, Decimal, unsigned int, unsigned int*);
-extern "C" Decimal __bid64_div(Decimal, Decimal, unsigned int, unsigned int*);
-extern "C" Decimal __bid64_from_string(char*, unsigned int, unsigned int*);
-extern "C" void __bid64_to_string(char*, Decimal, unsigned int*);
-extern "C" double __bid64_to_binary64(Decimal, unsigned int, unsigned int*);
-extern "C" Decimal __binary64_to_bid64(double, unsigned int, unsigned int*);
-```
-
-#### Modified `Decimal.h`
-
-Replace external BID decimal operations with standard C++ operations:
-
-```cpp
-#pragma once
-#ifndef TWS_API_CLIENT_DECIMAL_H
-#define TWS_API_CLIENT_DECIMAL_H
-
-#include <sstream>
-#include <climits>
-#include <string>
-#include <stdexcept>
-
-// Decimal type
-typedef unsigned long long Decimal;
-
-#define UNSET_DECIMAL ULLONG_MAX
-
-// Implement arithmetic functions using standard C++
-inline Decimal add(Decimal decimal1, Decimal decimal2) {
-    return decimal1 + decimal2;
-}
-
-inline Decimal sub(Decimal decimal1, Decimal decimal2) {
-    return decimal1 >= decimal2 ? decimal1 - decimal2 : 0;  // Handle underflow
-}
-
-inline Decimal mul(Decimal decimal1, Decimal decimal2) {
-    return decimal1 * decimal2;
-}
-
-inline Decimal div(Decimal decimal1, Decimal decimal2) {
-    if (decimal2 == 0) {
-        throw std::runtime_error("Division by zero");
-    }
-    return decimal1 / decimal2;
-}
-
-// Conversion functions using standard library
-inline Decimal stringToDecimal(const std::string& str) {
-    try {
-        return std::stoull(str);
-    } catch (const std::invalid_argument&) {
-        throw std::runtime_error("Invalid decimal string");
-    } catch (const std::out_of_range&) {
-        throw std::runtime_error("Decimal string out of range");
-    }
-}
-
-inline std::string decimalToString(Decimal value) {
-    return std::to_string(value);
-}
-
-inline std::string decimalStringToDisplay(Decimal value) {
-    std::string tempStr = decimalToString(value);
-    int expPos = tempStr.find('E');
-    if (expPos < 0) {
-        return tempStr;
-    }
-
-    std::string expStr = tempStr.substr(expPos);
-    int exp = std::stoi(expStr.substr(1));
-    std::string baseStr = tempStr.substr(0, expPos);
-
-    std::ostringstream oss;
-    if (exp < 0) {
-        oss << "0.";
-        for (int i = -1; i > exp; --i) {
-            oss << '0';
-        }
-        oss << baseStr;
-    } else {
-        oss << baseStr;
-        for (int i = 0; i < exp; ++i) {
-            oss << '0';
-        }
-    }
-
-    return oss.str();
-}
-
-inline double decimalToDouble(Decimal decimal) {
-    return static_cast<double>(decimal);
-}
-
-inline Decimal doubleToDecimal(double d) {
-    return static_cast<Decimal>(d);
-}
-
-#endif // TWS_API_CLIENT_DECIMAL_H
-```
-
-### Building the API Dynamic Library
-
-1. **Navigate to the API Directory**:
-
-   ```bash
-   cd api
-   ```
-
-2. **Run the build script**:
-
-   ```bash
-   ./make.sh
-   ```
-
-   This script will create a build directory, configure the build using CMake, compile the sources, and place the resulting dynamic library in the `build/lib` directory.
-
 ### Building the Application
 
-To build the application executable:
+To build the application:
 
-Run `make.sh` or:
-
-1. **Ensure all dependencies are installed.** You can install the Python dependencies using pip:
-
+1. **Install dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Create a build directory in the root project directory and navigate into it**:
-
+2. **Create a build directory and navigate into it**:
    ```bash
    mkdir -p build && cd build
    ```
 
 3. **Run CMake to configure the project**:
-
    ```bash
    cmake ..
    ```
 
 4. **Build the application**:
-
    ```bash
-   make
+   make -j8
    ```
 
-   The resulting executable will be placed in the `build` directory.
+   The executable will be placed in the `bin/` directory.
 
 ### Running the Application
 
-To run the main application, execute the compiled binary from the build directory:
+To run the main application:
 
 ```bash
-./main
+./bin/OpenSTX
 ```
 
 ### Python Scripts
@@ -297,33 +155,49 @@ python src/data/get_data.py
 python src/data/get_realtime_data.py
 ```
 
-## Modules Overview
+## Module Overview
 
-### API Module (`api/`)
+### API Module (`third_parts/ib_tws/`)
 
-- **Purpose**: Integrates with Interactive Brokers TWS API to facilitate trading operations and data fetching.
-- **Technology**: C++ with dependencies on Boost and OpenSSL for robust networking and security features.
-- **Build**: Outputs a dynamic library (`libapi_library.dylib` or equivalent) used by other parts of the application.
+- **Purpose**: Provides integration with Interactive Brokers TWS API.
+- **Build**: Outputs a dynamic library (`libib_tws.dylib`).
+- **Dependencies**: Requires modifications to `Decimal.h` on macOS for compatibility with Apple Silicon. Detailed instructions can be found in the [README.md](third_parts/ib_tws/README.md).
 
 ### Data Module (`src/data/`)
 
 - **Purpose**: Handles data fetching, processing, and storage.
-- **Technology**: Combines C++ for high-performance operations with Python for flexible data analysis and manipulation.
-- **Components**:
-  - **C++**: Implements core data handling functionality.
-  - **Python**: Provides scripts for real-time data fetching and processing.
+- **Technology**: Uses C++ for core data handling and Python for flexible data analysis.
 
 ### Logger Module (`src/logger/`)
 
-- **Purpose**: Provides logging facilities for the application.
-- **Technology**: Implemented in C++ for high-performance logging with minimal overhead.
-- **Components**:
-  - **Logger.cpp**: Core logging functionality.
+- **Purpose**: Provides logging facilities.
+- **Technology**: Implemented in C++ for performance.
+
+### TimescaleDB Integration (`src/database/TimescaleDB.cpp`)
+
+- **Purpose**: Provides time-series data storage and query capabilities using TimescaleDB.
+- **Technology**: Uses `libpqxx` for PostgreSQL and TimescaleDB interaction.
+- **Dependencies**: Requires TimescaleDB and PostgreSQL to be installed and configured.
 
 ### Main Application (`src/main.cpp`)
 
-- **Purpose**: The entry point of the application, orchestrates interactions between different modules.
+- **Purpose**: The entry point of the application.
 - **Technology**: C++.
+
+## Troubleshooting and Common Errors
+
+### Undefined Symbols for Architecture arm64
+
+If you encounter undefined symbols related to `libpqxx`, ensure:
+
+1. **Correct Compilation of `libpqxx`**: The library should be compiled correctly with proper linkage to your project.
+2. **Consistent C++ Standard and Compiler**: Ensure that the same C++ standard and compiler are used across your project and third-party libraries.
+3. **Correct Library Paths**: Verify that your `CMakeLists.txt` correctly includes and links the necessary libraries.
+
+### Other Issues
+
+- **Linking Errors**: Ensure all dependencies are correctly installed and linked.
+- **Compiler Errors**: Check for missing headers or incompatible C++ standards.
 
 ## License
 

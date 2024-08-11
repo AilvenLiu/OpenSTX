@@ -2,15 +2,13 @@ cmake_minimum_required(VERSION 3.25)
 project(OpenSTX)
 
 # Set C++ standard
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Include directories for project headers and API headers
 include_directories(${PROJECT_SOURCE_DIR}/include)
-include_directories(${PROJECT_SOURCE_DIR}/api/include)
-include_directories("/opt/homebrew/include")
-
-message(STATUS "PROJECT_SOURCE_DIR: ${PROJECT_SOURCE_DIR}")
+include_directories(${PROJECT_SOURCE_DIR}/third_parts/ib_tws/include)
+include_directories(${PROJECT_SOURCE_DIR}/third_parts/libpqxx/include)
 
 # Add source files for the main project
 file(GLOB_RECURSE PROJECT_SOURCES 
@@ -25,10 +23,8 @@ set(EXECUTABLE_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/bin")
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
 
 # Set the path to the TWS API dynamic library
-set(TWS_LIB "${PROJECT_SOURCE_DIR}/api/lib/libib_tws.dylib")
-
-# Add executable target for the project
-add_executable(OpenSTX ${PROJECT_SOURCES})
+set(TWS_LIB "${PROJECT_SOURCE_DIR}/third_parts/ib_tws/lib/libib_tws.dylib")
+set(PQXX_LIB "${PROJECT_SOURCE_DIR}/third_parts/libpqxx/lib/libpqxx.dylib")
 
 # Find Boost libraries
 find_package(Boost REQUIRED COMPONENTS system filesystem)
@@ -60,12 +56,15 @@ if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(CMAKE_OSX_ARCHITECTURES "arm64")
 endif()
 
+# Add executable target for the project
+add_executable(OpenSTX ${PROJECT_SOURCES})
+
 # Link libraries to the executable
 target_link_libraries(OpenSTX
     ${TWS_LIB}               # Link TWS API library
     ${Boost_LIBRARIES}       # Link Boost libraries
     ${OPENSSL_LIBRARIES}     # Link OpenSSL libraries
-    /opt/homebrew/lib/libpqxx.dylib  # Link libpqxx dynamic library
+    ${PQXX_LIB}              # Link libpqxx dynamic library
 )
 
 # Installation rules
