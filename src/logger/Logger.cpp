@@ -42,11 +42,12 @@ std::string Logger::getTimestamp() const {
     return std::string(buf);
 }
 
-void Logger::log(LogLevel level, const std::string& message) {
+void Logger::log(LogLevel level, const std::string& message, const char* file, int line, const char* func) {
     if (level <= logLevel) {
         std::lock_guard<std::mutex> lock(logMutex);
         logFile << "[" << getTimestamp() << "] "
                 << "[" << logLevelToString(level) << "] "
+                << "[" << file << ":" << line << " - " << func << "] "
                 << message << std::endl;
     }
 }
