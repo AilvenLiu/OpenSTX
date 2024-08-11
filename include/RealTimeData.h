@@ -61,6 +61,7 @@ public:
     ~RealTimeData();
 
     void start();
+    void stop();
     void connectToIB();
     bool isMarketOpen();
     void requestData();
@@ -82,6 +83,7 @@ private:
     OrderId nextOrderId;
     int requestId;
     double yesterdayClose;
+    bool running;
 
     std::ofstream l1DataFile;
     std::ofstream l2DataFile;    
@@ -108,6 +110,10 @@ private:
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
     void calculateAndStoreFeatures(const std::string &datetime, double open, double high, double low, double close, double volume);
+    double calculateRSI();
+    double calculateMACD();
+    double calculateEMA(int period);
+    double calculateVWAP();
 
 
     // Unused EWrapper methods, implement to avoid a pure virtual class (but may be used later below)

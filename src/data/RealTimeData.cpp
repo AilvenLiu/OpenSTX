@@ -20,43 +20,33 @@
  *************************************************************************/
 
 #include <numeric>
+#include <cmath>
 #include "RealTimeData.h"
 
 // Constructor
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
-    : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0) {
+    : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0), running(false) {
 
     // Initialize paths and open files for writing
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
     std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
 
     std::ostringstream oss;
-    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-d");
+    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d");
     std::string date_today = oss.str();
-
-    l1FilePath = "data/realtime_original_data/l1_data_" + date_today + ".csv";
-    l2FilePath = "data/realtime_original_data/l2_data_" + date_today + ".csv";
-    combinedFilePath = "data/daily_realtime_data/combined_data_" + date_today + ".csv";
-
-    l1DataFile.open(l1FilePath, std::ios::app);
-    l2DataFile.open(l2FilePath, std::ios::app);
-    combinedDataFile.open(combinedFilePath, std::ios::app);
-
-    // Write headers to the files
-    l1DataFile << "Datetime,Bid,Ask,Last,Open,High,Low,Close,Volume\n";
-    l2DataFile << "Datetime,PriceLevel,BidPrice,BidSize,AskPrice,AskSize\n";
-    combinedDataFile << "Datetime,Open,High,Low,Close,Volume,BidAskSpread,Midpoint,PriceChange,L2Depth,Gap\n";
 
     connectToIB();
 }
 
 // Destructor
 RealTimeData::~RealTimeData() {
-    if (l1DataFile.is_open()) l1DataFile.close();
-    if (l2DataFile.is_open()) l2DataFile.close();
-    if (combinedDataFile.is_open()) l1DataFile.close();
-    if (client) client.reset();
-    boost::interprocess::shared_memory_object::remove("RealTimeData");
+    if (client) {
+        client.reset();
+    }
+    if (running) {
+        stop();  // Ensure stop is called to clean up resources
+    }
+    boost::interprocess::shared_memory_object::remove("/RealTimeData");
 }
 
 void RealTimeData::connectToIB() {
@@ -73,6 +63,8 @@ void RealTimeData::connectToIB() {
 }
 
 void RealTimeData::start() {
+    running = true;
+
     // Clear any existing shared memory object with the same name
     boost::interprocess::shared_memory_object::remove("RealTimeData");
     
@@ -80,10 +72,11 @@ void RealTimeData::start() {
     shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
     shm.truncate(1024);  // Adjust size as needed
     region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
+    STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
 
     std::time_t lastMinute = std::time(nullptr) / 60;
 
-    while (true) {
+    while (running) {
         if (isMarketOpen()) {
             requestData();
 
@@ -98,6 +91,26 @@ void RealTimeData::start() {
             std::this_thread::sleep_for(std::chrono::minutes(1));  // Check again after 1 minute
         }
     }
+
+    // Clean up before exiting
+    stop();
+}
+
+void RealTimeData::stop() {
+    running = false;
+
+    // Cleanup shared memory
+    boost::interprocess::shared_memory_object::remove("RealTimeData");
+
+    // Ensure the client is properly disconnected
+    if (client && client->isConnected()) {
+        client->eDisconnect();
+        STX_LOGI(logger, "Disconnected from IB TWS");
+    }
+
+    // Reset shared resources
+    client.reset();
+    STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
 bool RealTimeData::isMarketOpen() {
@@ -142,7 +155,6 @@ void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, co
     std::ostringstream oss;
     oss << "Tick Price: " << tickerId << " Field: " << field << " Price: " << price;
     STX_LOGI(logger, oss.str());
-    writeToSharedMemory(oss.str());
 }
 
 void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
@@ -156,7 +168,6 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
     std::ostringstream oss;
     oss << "Tick Size: " << tickerId << " Field: " << field << " Size: " << size;
     STX_LOGI(logger, oss.str());
-    writeToSharedMemory(oss.str());
 }
 
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
@@ -166,7 +177,6 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
     std::ostringstream oss;
     oss << "Update Mkt Depth: " << id << " Position: " << position << " Operation: " << operation << " Side: " << side << " Price: " << price << " Size: " << size;
     STX_LOGI(logger, oss.str());
-    writeToSharedMemory(oss.str());
 }
 
 void RealTimeData::processL2Data(int position, double price, Decimal size, int side) {
@@ -186,21 +196,6 @@ void RealTimeData::processL2Data(int position, double price, Decimal size, int s
     }
 
     l2Data.push_back(data);
-
-    // Write L2 data to file immediately
-    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
-    std::ostringstream time_oss;
-    time_oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
-    std::string datetime = time_oss.str();
-
-    std::ostringstream oss;
-    oss << datetime << "," << position << "," << data["BidPrice"] << "," << data["BidSize"] << ","
-        << data["AskPrice"] << "," << data["AskSize"] << "\n";
-
-    if (l2DataFile.is_open()) {
-        l2DataFile << oss.str();
-    }
 }
 
 void RealTimeData::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
@@ -244,28 +239,29 @@ void RealTimeData::aggregateMinuteData() {
     double gap = open - yesterdayClose;
     yesterdayClose = close;  // Update for the next day
 
+    double rsi = calculateRSI();
+    double macd = calculateMACD();
+    double vwap = calculateVWAP();
+
     std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
     std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
     std::ostringstream oss;
     oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
-    // Write aggregated data to combinedDataFile
+    // Write combined data to shared memory
     std::stringstream combinedData;
     combinedData << datetime << "," << open << "," << high << "," << low << "," << close << "," << volume << ","
-                 << bidAskSpread << "," << midpoint << "," << priceChange << "," << totalL2Volume << "," << gap << "\n";
+                 << bidAskSpread << "," << midpoint << "," << priceChange << "," << totalL2Volume << "," << gap << ","
+                 << rsi << "," << macd << "," << vwap << "\n";
 
-    if (combinedDataFile.is_open()) {
-        combinedDataFile << combinedData.str();
-    }
+    // Write to shared memory
+    writeToSharedMemory(combinedData.str());
 
     // Insert into TimescaleDB
     timescaleDB->insertL1Data(datetime, {{"Bid", l1Prices.front()}, {"Ask", l1Prices.back()}, {"Last", close}, {"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}});
     timescaleDB->insertL2Data(datetime, l2Data);
-    timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}});
-
-    // Write to shared memory
-    writeToSharedMemory(combinedData.str());
+    timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}, {"RSI", rsi}, {"MACD", macd}, {"VWAP", vwap}});
 
     // Clear temporary data
     l1Prices.clear();
@@ -275,5 +271,62 @@ void RealTimeData::aggregateMinuteData() {
 
 void RealTimeData::writeToSharedMemory(const std::string &data) {
     std::lock_guard<std::mutex> lock(dataMutex);
+    std::memset(region.get_address(), 0, region.get_size());  // Clear shared memory before writing new data
     std::memcpy(region.get_address(), data.c_str(), data.size());
+}
+
+double RealTimeData::calculateRSI() {
+    // Implement RSI calculation based on l1Prices
+    if (l1Prices.size() < 2) return 50.0; // Return neutral value if not enough data
+
+    double gains = 0.0, losses = 0.0;
+    for (size_t i = 1; i < l1Prices.size(); ++i) {
+        double change = l1Prices[i] - l1Prices[i - 1];
+        if (change > 0) {
+            gains += change;
+        } else {
+            losses -= change;
+        }
+    }
+
+    double rs = (losses == 0) ? gains : gains / losses;
+    return 100.0 - (100.0 / (1.0 + rs));
+}
+
+double RealTimeData::calculateMACD() {
+    // Implement MACD calculation based on l1Prices
+    if (l1Prices.size() < 26) return 0.0;  // Not enough data
+
+    double shortEMA = calculateEMA(12);
+    double longEMA = calculateEMA(26);
+
+    return shortEMA - longEMA;
+}
+
+double RealTimeData::calculateEMA(int period) {
+    if (l1Prices.size() < period) return l1Prices.back();
+
+    double multiplier = 2.0 / (period + 1);
+    double ema = l1Prices[l1Prices.size() - period];  // Start with the first price in the period
+
+    for (size_t i = l1Prices.size() - period + 1; i < l1Prices.size(); ++i) {
+        ema = (l1Prices[i] - ema) * multiplier + ema;
+    }
+
+    return ema;
+}
+
+double RealTimeData::calculateVWAP() {
+    // Implement VWAP calculation based on l1Prices and l1Volumes
+    if (l1Prices.empty() || l1Volumes.empty()) return 0.0;
+
+    double cumulativePriceVolume = 0.0;
+    double cumulativeVolume = 0.0;
+
+    for (size_t i = 0; i < l1Prices.size(); ++i) {
+        cumulativePriceVolume += l1Prices[i] * l1Volumes[i];
+        cumulativeVolume += l1Volumes[i];
+    }
+
+    return cumulativePriceVolume / cumulativeVolume;
 }

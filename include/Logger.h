@@ -49,16 +49,16 @@ public:
     Logger(const std::string& filename, LogLevel level = LogLevel::INFO);
     ~Logger();
 
-    void log(LogLevel level, const std::string& message);
+    void log(LogLevel level, const std::string& message, const char* file, int line, const char* func);
 
     static std::string logLevelToString(LogLevel level);
 };
 
 // 定义日志宏
-#define STX_LOGF(logger, message) (logger)->log(LogLevel::FATAL, message)
-#define STX_LOGE(logger, message) (logger)->log(LogLevel::ERROR, message)
-#define STX_LOGW(logger, message) (logger)->log(LogLevel::WARNING, message)
-#define STX_LOGI(logger, message) (logger)->log(LogLevel::INFO, message)
-#define STX_LOGD(logger, message) (logger)->log(LogLevel::DEBUG, message)
+#define STX_LOGF(logger, message) (logger)->log(LogLevel::FATAL, message, __FILE__, __LINE__, __func__)
+#define STX_LOGE(logger, message) (logger)->log(LogLevel::ERROR, message, __FILE__, __LINE__, __func__)
+#define STX_LOGW(logger, message) (logger)->log(LogLevel::WARNING, message, __FILE__, __LINE__, __func__)
+#define STX_LOGI(logger, message) (logger)->log(LogLevel::INFO, message, __FILE__, __LINE__, __func__)
+#define STX_LOGD(logger, message) (logger)->log(LogLevel::DEBUG, message, __FILE__, __LINE__, __func__)
 
 #endif // LOGGER_H

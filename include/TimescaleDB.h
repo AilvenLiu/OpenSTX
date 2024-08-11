@@ -40,6 +40,9 @@ public:
 
 private:
     void createTables();
+    void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
+    void cleanupAndExit();
+    
     std::shared_ptr<Logger> logger;
     pqxx::connection *conn;
 };
