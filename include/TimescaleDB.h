@@ -39,8 +39,9 @@ public:
     void insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features);
 
 private:
-    void createTables();
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
+    void enableTimescaleExtension();
+    void createTables();
     void cleanupAndExit();
     
     std::shared_ptr<Logger> logger;

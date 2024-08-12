@@ -32,19 +32,17 @@ add_subdirectory(src)
 add_subdirectory(include)
 
 # 设置自定义的安装路径
-set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}/lib")
-set(INCLUDE_INSTALL_DIR "${PROJECT_SOURCE_DIR}/include")
-set(LIB_INSTALL_DIR "${PROJECT_SOURCE_DIR}/lib")
+set(CMAKE_INSTALL_PREFIX "${PROJECT_SOURCE_DIR}")
 
 # 安装库文件和头文件
 install(
     TARGETS pqxx
-    LIBRARY DESTINATION ${LIB_INSTALL_DIR}   # 动态库安装路径
-    ARCHIVE DESTINATION ${LIB_INSTALL_DIR}   # 静态库安装路径
-    RUNTIME DESTINATION ${LIB_INSTALL_DIR}   # 可执行文件安装路径
+    LIBRARY DESTINATION ${CMAKE_INSTALL_PREFIX}/lib   # 动态库安装路径
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_PREFIX}/lib   # 静态库安装路径
+    RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/lib   # 可执行文件安装路径
 )
 
 install(
     DIRECTORY "${PROJECT_SOURCE_DIR}/include/pqxx"
-    DESTINATION ${INCLUDE_INSTALL_DIR}       # 头文件安装路径
+    DESTINATION ${CMAKE_INSTALL_PREFIX}/include       # 头文件安装路径
 )

@@ -91,9 +91,49 @@ Before building the project on macOS, ensure you have the following tools instal
    brew install libpq
    brew install postgresql
    brew install timescaledb
-   brew services start postgresql
    ```
-   You may also use a cloud-based TimescaleDB from Amazon Cloud or AliCloud.
+   Sometimes there's no timescaledb from brew, then you are suggedted to build and install it from source code:    
+   ```bash
+   git clone https://github.com/timescale/timescaledb.git
+   cd timescaledb
+   ./bootstrap
+   cd build
+   make -j
+   sudo make install
+   ```
+
+   Of course that you may also use a cloud-based TimescaleDB from Amazon Cloud or AliCloud, which is also our solution in production stage. 
+
+   Start it up and check the status: 
+   ```bash
+   brew services start postgresql # start the db service
+   pg_ctl status -D /opt/homebrew/var/postgresql@14 # check the running status
+   ```
+
+   Add a db user:   
+   ```sql
+   psql postgres
+   CREATE USER new_user WITH PASSWORD 'your_password'; # create a user
+   ALTER USER new_user CREATEDB;; # alter user to create db
+   quit;
+   ```
+
+   In the development stage, you may need to create and delete db & table frequently, which need a priority of super-user:
+   ```sql
+   ALTER USER new_user WITH SUPERUSER;
+   ```
+   **Howvere, it's strictly forbided in a product environment!!**
+
+   To point the database on a special path, you'd create a table space as follow:
+   ```sql
+   psql postgres
+   CREATE TABLESPACE openstx_space LOCATION '${PROJECT_ROOT}/db';
+   ```
+   So that it's allowed to create a database in this space as :
+   ```sql
+   CREATE DATABASE openstx TABLESPACE openstx_space;
+   ```
+
 
 6. **GCC or Clang**: Ensure you have an up-to-date C++ compiler, typically provided with Xcode on macOS.
 

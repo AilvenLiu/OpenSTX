@@ -47,21 +47,27 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
 
 void TimescaleDB::createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port) {
     try {
-        std::string adminConnectionString = "user=" + user + " password=" + password + " host=" + host + " port=" + port;
+        // Connect to the default "postgres" database to create a new database
+        std::string adminConnectionString = "dbname=postgres user=" + user + " password=" + password + " host=" + host + " port=" + port;
         pqxx::connection adminConn(adminConnectionString);
 
         if (adminConn.is_open()) {
-            pqxx::work txn(adminConn);
-            txn.exec("CREATE DATABASE " + dbname);
-            txn.commit();
+            pqxx::nontransaction txn(adminConn);  // Use nontransaction to avoid creating a transaction block
 
-            STX_LOGI(logger, "Database created successfully: " + dbname);
+            // Create the database using a direct exec command
+            txn.exec("CREATE DATABASE " + dbname + " TABLESPACE openstx_space;");
+
+            STX_LOGI(logger, "Database created successfully in tablespace openstx_space.");
 
             // Reconnect to the newly created database
             std::string connectionString = "dbname=" + dbname + " user=" + user + " password=" + password + " host=" + host + " port=" + port;
             conn = new pqxx::connection(connectionString);
             if (conn->is_open()) {
                 STX_LOGI(logger, "Connected to TimescaleDB: " + dbname);
+
+                // Enable TimescaleDB extension
+                enableTimescaleExtension();
+
                 createTables();
             } else {
                 STX_LOGE(logger, "Failed to connect to TimescaleDB after creation: " + dbname);
@@ -73,6 +79,18 @@ void TimescaleDB::createDatabase(const std::string &dbname, const std::string &u
         }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error creating TimescaleDB database: " + std::string(e.what()));
+        cleanupAndExit();
+    }
+}
+
+void TimescaleDB::enableTimescaleExtension() {
+    try {
+        pqxx::work txn(*conn);
+        txn.exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;");
+        txn.commit();
+        STX_LOGI(logger, "TimescaleDB extension enabled.");
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error enabling TimescaleDB extension: " + std::string(e.what()));
         cleanupAndExit();
     }
 }
