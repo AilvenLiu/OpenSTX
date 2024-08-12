@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <memory>
 
+#include "Config.h"
 #include "Logger.h"
 #include "RealTimeData.h"
 #include "TimescaleDB.h"
@@ -55,14 +56,22 @@ int main() {
     std::shared_ptr<Logger> logger = std::make_shared<Logger>(logFilePath);
     STX_LOGI(logger, "Start main");
 
+    // connect to timescale database
+    std::string configFilePath = "conf/alicloud_db.ini";
     std::shared_ptr<TimescaleDB> timescaleDB;
-    std::shared_ptr<RealTimeData> dataCollector;
-
     try {
-        timescaleDB = std::make_shared<TimescaleDB>(logger, "openstx", "openstx", "test_password", "localhost", "5432");
-    } catch (const std::exception &e) {
+        DBConfig config = loadConfig(configFilePath, logger);
+        timescaleDB = std::make_shared<TimescaleDB>(
+            logger, 
+            config.dbname, 
+            config.user, 
+            config.password, 
+            config.host, 
+            config.port
+        );
+    } catch (const std::exception& e) {
         STX_LOGE(logger, "Failed to initialize TimescaleDB: " + std::string(e.what()));
-        return 1; // Exit the program if DB initialization fails
+        return 1;
     }
 
     try {

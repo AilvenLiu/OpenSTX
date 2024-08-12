@@ -52,6 +52,20 @@ private:
     std::string password;
     std::string host;
     std::string port;
+
+    // for unit test
+    friend class TimescaleDBAccessor;
+};
+
+class TimescaleDBAccessor {
+public:
+    static pqxx::connection* getConnection(TimescaleDB& db) {
+        return db.conn;
+    }
+
+    static void callCreateDatabase(TimescaleDB& db, const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port) {
+        db.createDatabase(dbname, user, password, host, port);
+    }
 };
 
 #endif // TIMESCALEDB_H
