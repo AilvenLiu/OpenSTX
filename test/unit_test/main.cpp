@@ -1,4 +1,4 @@
-#include "TEST_TimescaleDB.h"
+#include "TEST_TimescaleDB.hpp"
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
