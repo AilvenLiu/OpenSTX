@@ -27,14 +27,6 @@
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
     : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0), running(false) {
 
-    // Initialize paths and open files for writing
-    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
-
-    std::ostringstream oss;
-    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d");
-    std::string date_today = oss.str();
-
     connectToIB();
 }
 

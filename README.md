@@ -93,7 +93,9 @@ Before building the project on macOS, ensure you have the following tools instal
    brew install postgresql
    brew install timescaledb
    ```
+
    Sometimes there's no timescaledb from brew, then you are suggedted to build and install it from source code:    
+   
    ```bash
    git clone https://github.com/timescale/timescaledb.git
    cd timescaledb
@@ -109,6 +111,19 @@ Before building the project on macOS, ensure you have the following tools instal
    ```bash
    brew services start postgresql # start the db service
    pg_ctl status -D /opt/homebrew/var/postgresql@14 # check the running status
+   ```
+
+   For using the timescaleDB extention, you'd modify the postgres' config:    
+   ```bash
+   vim /opt/homebrew/var/postgresql@14/postgresql.conf # only be the same with MACOS installed from brew
+   ```     
+   and modify 
+   ```plaintext
+   shared_preload_libraries = 'timescaledb'
+   ```
+   then restart the service:    
+   ```bash
+   brew services restart postgresql
    ```
 
    Add a db user:   
@@ -130,11 +145,11 @@ Before building the project on macOS, ensure you have the following tools instal
    psql postgres
    CREATE TABLESPACE openstx_space LOCATION '${PROJECT_ROOT}/db';
    ```
+
    So that it's allowed to create a database in this space as :
    ```sql
    CREATE DATABASE openstx TABLESPACE openstx_space;
    ```
-
 
 6. **GCC or Clang**: Ensure you have an up-to-date C++ compiler, typically provided with Xcode on macOS.
 

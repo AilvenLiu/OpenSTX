@@ -41,11 +41,17 @@ public:
 private:
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
     void enableTimescaleExtension();
+    void reconnect(int max_attempts, int delay_seconds);
     void createTables();
     void cleanupAndExit();
     
     std::shared_ptr<Logger> logger;
     pqxx::connection *conn;
+    std::string dbname;
+    std::string user;
+    std::string password;
+    std::string host;
+    std::string port;
 };
 
 #endif // TIMESCALEDB_H
