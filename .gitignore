@@ -12,12 +12,12 @@ __pycache__/
 db/*
 
 # bin
-bin
-**/bin
+bin/*
+**/bin/*
 
 # lib
-lib
-**/lib
+lib/*
+**/lib/*
 
 # Distribution / packaging
 .Python

@@ -45,7 +45,7 @@ DBConfig loadConfig(const std::string& configFilePath, const std::shared_ptr<Log
         boost::property_tree::ini_parser::read_ini(configFilePath, pt);
 
         // 根据 usecloud 选项选择加载的配置部分
-        bool useCloud = pt.get<bool>("usecloud.usecloud", false);
+        bool useCloud = pt.get<bool>("usecloud.usecloud");
         std::string section = useCloud ? "cloud" : "local";
 
         config.host = pt.get<std::string>(section + ".host");

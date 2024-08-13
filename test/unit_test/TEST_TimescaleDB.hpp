@@ -13,7 +13,7 @@ protected:
 
     void SetUp() override {
         logger = std::make_shared<Logger>("logs/unit_test.log"); 
-        db = std::make_shared<TimescaleDB>(logger, "openstx", "openstx", "test_password", "localhost", "5432");
+        db = std::make_shared<TimescaleDB>(logger, "openstx", "openstx", "fs4DGv%xGaE-i5U", "pgm-8vb58v983l2rm0c2do.pgsql.zhangbei.rds.aliyuncs.com", "5432");
     }
 };
 
@@ -24,7 +24,7 @@ TEST_F(TEST_TimescaleDB, ConnectionTest) {
 
 // 测试 TimescaleDB 数据库创建
 TEST_F(TEST_TimescaleDB, CreateDatabaseTest) {
-    TimescaleDBAccessor::callCreateDatabase(*db, "testdb", "openstx", "test_password", "localhost", "5432");  // 使用访问器类调用私有方法 createDatabase
+    TimescaleDBAccessor::callCreateDatabase(*db, "openstx", "openstx", "fs4DGv%xGaE-i5U", "pgm-8vb58v983l2rm0c2do.pgsql.zhangbei.rds.aliyuncs.com", "5432");  // 使用访问器类调用私有方法 createDatabase
     pqxx::connection conn("dbname=testdb user=openstx password=test_password host=localhost port=5432");
     ASSERT_TRUE(conn.is_open());
 }

@@ -59,6 +59,7 @@ int main() {
     // connect to timescale database
     std::string configFilePath = "conf/alicloud_db.ini";
     std::shared_ptr<TimescaleDB> timescaleDB;
+    std::shared_ptr<RealTimeData> dataCollector;
     try {
         DBConfig config = loadConfig(configFilePath, logger);
         timescaleDB = std::make_shared<TimescaleDB>(
