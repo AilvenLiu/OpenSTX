@@ -77,6 +77,7 @@ int main() {
 
     try {
         dataCollector = std::make_shared<RealTimeData>(logger, timescaleDB);
+        STX_LOGI(logger, "Success to initialize RealTimeData.");
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Failed to initialize RealTimeData: " + std::string(e.what()));
         return 1; // Exit the program if RealTimeData initialization fails

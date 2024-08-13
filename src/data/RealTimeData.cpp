@@ -27,30 +27,71 @@
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
     : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0), running(false) {
 
-    connectToIB();
+    // Check the validity of logger and timescaleDB
+    if (!logger) {
+        std::cerr << "Logger is null" << std::endl;
+        throw std::runtime_error("Logger is null");
+    }
+    if (!timescaleDB) {
+        STX_LOGE(logger, "TimescaleDB is null");
+        throw std::runtime_error("TimescaleDB is null");
+    }
+    
+    try {
+        STX_LOGI(logger, "Before connecting to IB TWS.");
+        connectToIB();
+        STX_LOGI(logger, "RealTimeData object created successfully.");
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error connecting to IB TWS: " + std::string(e.what()));
+        stop();
+    }
 }
 
 // Destructor
 RealTimeData::~RealTimeData() {
-    if (client) {
-        client.reset();
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+        if (client) {
+            client.reset();
+        }
     }
     if (running) {
         stop();  // Ensure stop is called to clean up resources
     }
-    boost::interprocess::shared_memory_object::remove("/RealTimeData");
+    boost::interprocess::shared_memory_object::remove("RealTimeData");
 }
 
 void RealTimeData::connectToIB() {
-    client = std::make_shared<EClientSocket>(this, nullptr);
-    const char *host = "127.0.0.1";
-    int port = 7496;
-    int clientId = 0;
+    std::lock_guard<std::mutex> lock(clientMutex);
 
-    if (client->eConnect(host, port, clientId)) {
-        STX_LOGI(logger, "Connected to IB TWS");
-    } else {
-        STX_LOGE(logger, "Failed to connect to IB TWS");
+    // Log before creating the client object
+    STX_LOGI(logger, "Creating EClientSocket.");
+
+    try {
+        client = std::make_shared<EClientSocket>(this, nullptr);
+
+        // Log after creating the client object
+        if (!client) {
+            throw std::runtime_error("Failed to create EClientSocket");
+        }
+        STX_LOGI(logger, "EClientSocket created, attempting to connect.");
+        
+        const char *host = "127.0.0.1";
+        int port = 7496;
+        int clientId = 0;
+
+        if (client->eConnect(host, port, clientId)) {
+            STX_LOGI(logger, "Connected to IB TWS");
+        } else {
+            STX_LOGE(logger, "Failed to connect to IB TWS.");
+            stop();
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
+        stop();
+    } catch (...) {
+        STX_LOGE(logger, "Unknown error occurred during connectToIB");
+        stop();
     }
 }
 

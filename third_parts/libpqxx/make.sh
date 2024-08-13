@@ -14,9 +14,16 @@ if [ -d "$BUILD_DIR" ]; then
     rm -rf "$BUILD_DIR"
 fi
 
+# Remove old lib directory if it exists
+if [ -d "$LIB_DIR" ]; then
+    echo "Removing old lib directory..."
+    rm -rf "$LIB_DIR"
+fi
+
 # Create build directory
-echo "Creating build directory..."
+echo "Creating build, lib directory..."
 mkdir -p "$BUILD_DIR"
+mkdir -p "$BIN_DIR"
 cd "$BUILD_DIR"
 
 # Run CMake to generate build files

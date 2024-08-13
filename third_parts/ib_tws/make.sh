@@ -10,7 +10,12 @@ if [ -d "$BUILD_DIR" ]; then
     rm -rf "$BUILD_DIR"
 fi
 
+if [ -d "$LIB_DIR" ]; then
+    rm -rf "$LIB_DIR"
+fi
+
 # Create build directory
+mkdir -p "$LIB_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 

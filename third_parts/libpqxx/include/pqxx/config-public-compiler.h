@@ -38,7 +38,7 @@
 /* Define to the version of this package. */
 /* #undef PACKAGE_VERSION */
 /* Define if this feature is available. */
-/* #undef PQXX_HAVE_CHARCONV_FLOAT */
+#define PQXX_HAVE_CHARCONV_FLOAT
 /* Define if this feature is available. */
 #define PQXX_HAVE_CHARCONV_INT
 /* Define if this feature is available. */
