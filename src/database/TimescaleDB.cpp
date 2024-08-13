@@ -19,10 +19,12 @@
  * Date: 2024
  *************************************************************************/
 
+#include <thread>
+
 #include "TimescaleDB.h"
 
-TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port) 
-    : logger(log), conn(nullptr) {
+TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &_dbname, const std::string &_user, const std::string &_password, const std::string &_host, const std::string &_port) 
+    : logger(log), conn(nullptr), dbname(_dbname), user(_user), password(_password), host(_host), port(_port) {
     try {
         std::string connectionString = "dbname=" + dbname + " user=" + user + " password=" + password + " host=" + host + " port=" + port;
 
@@ -30,6 +32,7 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
             conn = new pqxx::connection(connectionString);
             if (conn->is_open()) {
                 STX_LOGI(logger, "Connected to TimescaleDB: " + dbname);
+                enableTimescaleExtension();
                 createTables();
             } else {
                 STX_LOGE(logger, "Failed to connect to TimescaleDB: " + dbname);
@@ -45,27 +48,34 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
     }
 }
 
+TimescaleDB::~TimescaleDB() {
+    STX_LOGI(logger, "Destructor called, cleaning up resources.");
+    if (conn) {
+        delete conn;
+        conn = nullptr;
+        STX_LOGI(logger, "Disconnected from TimescaleDB.");
+    }
+}
+
 void TimescaleDB::createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port) {
     try {
-        // Connect to the default "postgres" database to create a new database
+        STX_LOGI(logger, "Attempting to create database: " + dbname);
+        
         std::string adminConnectionString = "dbname=postgres user=" + user + " password=" + password + " host=" + host + " port=" + port;
         pqxx::connection adminConn(adminConnectionString);
 
         if (adminConn.is_open()) {
-            pqxx::nontransaction txn(adminConn);  // Use nontransaction to avoid creating a transaction block
+            pqxx::nontransaction txn(adminConn);  
 
-            // Create the database using a direct exec command
             txn.exec("CREATE DATABASE " + dbname + " TABLESPACE openstx_space;");
-
             STX_LOGI(logger, "Database created successfully in tablespace openstx_space.");
 
-            // Reconnect to the newly created database
             std::string connectionString = "dbname=" + dbname + " user=" + user + " password=" + password + " host=" + host + " port=" + port;
             conn = new pqxx::connection(connectionString);
             if (conn->is_open()) {
                 STX_LOGI(logger, "Connected to TimescaleDB: " + dbname);
 
-                // Enable TimescaleDB extension
+                // 在重新连接后立即检查扩展状态并重新初始化对象
                 enableTimescaleExtension();
 
                 createTables();
@@ -84,6 +94,7 @@ void TimescaleDB::createDatabase(const std::string &dbname, const std::string &u
 }
 
 void TimescaleDB::enableTimescaleExtension() {
+    STX_LOGI(logger, "Attempting to enable TimescaleDB extension.");
     try {
         pqxx::work txn(*conn);
         txn.exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;");
@@ -91,22 +102,56 @@ void TimescaleDB::enableTimescaleExtension() {
         STX_LOGI(logger, "TimescaleDB extension enabled.");
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error enabling TimescaleDB extension: " + std::string(e.what()));
-        cleanupAndExit();
+        reconnect(5, 2);  // 尝试最多重连5次，每次重连之间等待2秒
     }
 }
 
-TimescaleDB::~TimescaleDB() {
-    if (conn) {
-        delete conn;
-        STX_LOGI(logger, "Disconnected from TimescaleDB");
+void TimescaleDB::reconnect(int max_attempts, int delay_seconds) {
+    int attempts = 0;
+    while (attempts < max_attempts) {
+        STX_LOGI(logger, "Attempting to reconnect to TimescaleDB. Attempt " + std::to_string(attempts + 1) + " of " + std::to_string(max_attempts));
+        try {
+            if (conn) {
+                delete conn;
+                conn = nullptr;
+            }
+
+            std::string connectionString = "dbname=" + dbname + " user=" + user + " password=" + password + " host=" + host + " port=" + port;
+            conn = new pqxx::connection(connectionString);
+
+            if (conn->is_open()) {
+                STX_LOGI(logger, "Reconnected to TimescaleDB: " + dbname);
+
+                // 再次尝试启用 TimescaleDB 扩展
+                try {
+                    pqxx::work txn(*conn);
+                    txn.exec("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;");
+                    txn.commit();
+                    STX_LOGI(logger, "TimescaleDB extension enabled.");
+                    return;  // 成功后退出循环
+                } catch (const std::exception &e) {
+                    STX_LOGE(logger, "Error enabling TimescaleDB extension after reconnect: " + std::string(e.what()));
+                }
+            } else {
+                STX_LOGE(logger, "Failed to reconnect to TimescaleDB: " + dbname);
+            }
+        } catch (const std::exception &e) {
+            STX_LOGE(logger, "Error reconnecting to TimescaleDB: " + std::string(e.what()));
+        }
+
+        attempts++;
+        std::this_thread::sleep_for(std::chrono::seconds(delay_seconds));  // 增加延迟时间
     }
+
+    STX_LOGE(logger, "Failed to reconnect to TimescaleDB after " + std::to_string(max_attempts) + " attempts.");
+    cleanupAndExit();
 }
 
 void TimescaleDB::createTables() {
+    STX_LOGI(logger, "Attempting to create or verify tables.");
     try {
         pqxx::work txn(*conn);
 
-        // Create the L1 data table
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS l1_data (
                 datetime TIMESTAMPTZ PRIMARY KEY,
@@ -121,7 +166,6 @@ void TimescaleDB::createTables() {
             );
         )");
 
-        // Create the L2 data table
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS l2_data (
                 datetime TIMESTAMPTZ,
@@ -134,7 +178,6 @@ void TimescaleDB::createTables() {
             );
         )");
 
-        // Create the feature data table, now with additional advanced indicators
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS feature_data (
                 datetime TIMESTAMPTZ PRIMARY KEY,
@@ -148,23 +191,27 @@ void TimescaleDB::createTables() {
         )");
 
         txn.commit();
-        STX_LOGI(logger, "Tables created or verified successfully");
+        STX_LOGI(logger, "Tables created or verified successfully.");
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error creating tables in TimescaleDB: " + std::string(e.what()));
     }
 }
 
 void TimescaleDB::cleanupAndExit() {
-    // Perform any necessary cleanup here
+    STX_LOGI(logger, "Cleaning up resources before exit...");
     if (conn) {
         delete conn;
         conn = nullptr;
     }
-    STX_LOGI(logger, "Exiting program due to error.");
+
+    std::this_thread::sleep_for(std::chrono::seconds(1)); // 保证日志记录的稳定性
+
+    STX_LOGI(logger, "Resources cleaned up. Exiting program due to error.");
     exit(EXIT_FAILURE);  // Graceful exit
 }
 
 void TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data) {
+    STX_LOGI(logger, "Inserting L1 data at " + datetime);
     try {
         pqxx::work txn(*conn);
 
@@ -189,6 +236,7 @@ void TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::
 }
 
 void TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data) {
+    STX_LOGI(logger, "Inserting L2 data at " + datetime);
     try {
         pqxx::work txn(*conn);
 
@@ -215,6 +263,7 @@ void TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<st
 }
 
 void TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features) {
+    STX_LOGI(logger, "Inserting feature data at " + datetime);
     try {
         pqxx::work txn(*conn);
 
