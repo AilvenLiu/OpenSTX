@@ -23,7 +23,7 @@ fi
 # Create build directory
 echo "Creating build, lib directory..."
 mkdir -p "$BUILD_DIR"
-mkdir -p "$BIN_DIR"
+mkdir -p "$LIB_DIR"
 cd "$BUILD_DIR"
 
 # Run CMake to generate build files
