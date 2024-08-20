@@ -1,64 +1,83 @@
-#ifndef SHAREDMEMORYSERVER_H
-#define SHAREDMEMORYSERVER_H
+/**************************************************************************
+ * This file is part of the OpenSTX project.
+ *
+ * OpenSTX (Open Smart Trading eXpert) is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * OpenSTX is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with OpenSTX. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Author: Ailven.LIU
+ * Email: ailven.x.liu@gmail.com
+ * Date: 2024
+ *************************************************************************/
 
-#include <iostream>
+#ifndef IBCLIENT_H
+#define IBCLIENT_H
+
 #include <string>
-#include <thread>
-#include <mutex>
-#include <sstream>
-#include <boost/interprocess/shared_memory_object.hpp>
-#include <boost/interprocess/mapped_region.hpp>
 #include <vector>
-#include <set>  // Include for std::set
-#include "Logger.h"
-#include "EClientSocket.h"
+#include <map>
+#include <variant>
+#include <memory>
+#include <mutex>
+#include <condition_variable>
 #include "EWrapper.h"
+#include "EReaderOSSignal.h"
+#include "EClientSocket.h"
+#include "Contract.h"
+#include "Bar.h"
+#include "Logger.h"
 
-// Include necessary headers for IB API types
-#include "FamilyCode.h"
-#include "PriceIncrement.h"
-#include "HistoricalSession.h"
-#include "SoftDollarTier.h"
-#include "NewsProvider.h"
-#include "DepthMktDataDescription.h"
-#include "HistoricalTick.h"
-#include "HistoricalTickBidAsk.h"
-#include "HistoricalTickLast.h"
-
-using namespace boost::interprocess;
-
-class SharedMemoryServer : public EWrapper {
-private:
-    EClientSocket *client;
-    Logger *logger;
-    shared_memory_object shm;
-    mapped_region region;
-    std::mutex dataMutex;
-    std::stringstream dataBuffer;
-
-    int nextOrderId;
-    int requestId;
-
+class IBClient : public EWrapper {
 public:
-    SharedMemoryServer(Logger *log);
-    ~SharedMemoryServer();
+    IBClient(const std::shared_ptr<Logger>& log);
+    ~IBClient();
 
-    // EWrapper interface implementations
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
-    void tickSize(TickerId tickerId, TickType field, Decimal size) override; // Updated
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override; // Updated
-    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override; // Updated
-    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson = "") override; // Updated
+    // Connection
+    bool connect(const std::string& host, int port, int clientId);
+    void disconnect();
+
+    // Data Requests
+    std::vector<std::map<std::string, std::variant<double, std::string>>> requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> requestOptionsData(const std::string& symbol, const std::string& expirationDate);
+
+    // EWrapper overrides
+    void historicalData(TickerId reqId, const Bar& bar) override;
+    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
+    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
 
-    void start();
+private:
+    std::unique_ptr<EReaderOSSignal> osSignal;
+    std::unique_ptr<EClientSocket> client;
+    std::shared_ptr<Logger> logger;
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool dataReceived;
 
-    // Helper functions
-    void connectToIB();
-    void requestData();
-    void writeToSharedMemory(const std::string &data);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
+    std::vector<std::map<std::string, std::variant<double, std::string>>> optionsDataBuffer;
 
+    int nextRequestId;
+    bool connected;
+
+    void waitForData();
+    void parseDateString(const std::string& dateStr, std::tm& timeStruct);
+
+private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override {};
+    void tickSize(TickerId tickerId, TickType field, Decimal size) override {};
+    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {};
+    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
     void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
         double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
@@ -87,8 +106,6 @@ public:
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
     void managedAccounts( const std::string& accountsList) override {}
     void receiveFA(faDataType pFaDataType, const std::string& cxml) override {}
-    void historicalData(TickerId reqId, const Bar& bar) override {}
-    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override {}
     void scannerParameters(const std::string& xml) override {}
     void scannerData(int reqId, int rank, const ContractDetails& contractDetails,
         const std::string& distance, const std::string& benchmark, const std::string& projection,
@@ -155,4 +172,4 @@ public:
     void userInfo(int reqId, const std::string& whiteBrandingId) override {}
 };
 
-#endif // SHAREDMEMORYSERVER_H
+#endif

@@ -54,6 +54,8 @@
 #include "HistoricalTick.h"
 #include "HistoricalTickBidAsk.h"
 #include "HistoricalTickLast.h"
+#include "EReader.h"
+#include "EReaderOSSignal.h"
 
 class RealTimeData : public EWrapper {
 public:
@@ -76,7 +78,9 @@ public:
     void nextValidId(OrderId orderId) override;
 
 private:
-    std::shared_ptr<EClientSocket> client;
+    std::unique_ptr<EReaderOSSignal> osSignal;
+    std::unique_ptr<EClientSocket> client;
+    std::unique_ptr<EReader> reader;
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> timescaleDB;
 
@@ -84,6 +88,7 @@ private:
     int requestId;
     double yesterdayClose;
     bool running;
+    std::thread readerThread;  // 保存线程句柄
 
     std::ofstream l1DataFile;
     std::ofstream l2DataFile;    
@@ -115,7 +120,6 @@ private:
     double calculateMACD();
     double calculateEMA(int period);
     double calculateVWAP();
-
 
     // Unused EWrapper methods, implement to avoid a pure virtual class (but may be used later below)
     void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}

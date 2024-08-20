@@ -58,6 +58,8 @@
         "list": "cpp",
         "regex": "cpp",
         "source_location": "cpp",
-        "span": "cpp"
+        "span": "cpp",
+        "csignal": "cpp",
+        "condition_variable": "cpp"
     }
 }

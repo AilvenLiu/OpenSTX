@@ -23,11 +23,12 @@
 #include <cmath>
 #include "RealTimeData.h"
 
-// Constructor
-RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
-    : client(nullptr), logger(log), timescaleDB(db), nextOrderId(0), requestId(0), yesterdayClose(0.0), running(false) {
+RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db):   
+        osSignal(std::make_unique<EReaderOSSignal>(2000)), 
+        client(std::make_unique<EClientSocket>(this, osSignal.get())), 
+        logger(log), timescaleDB(db), nextOrderId(0), 
+        requestId(0), yesterdayClose(0.0), running(false) {
 
-    // Check the validity of logger and timescaleDB
     if (!logger) {
         std::cerr << "Logger is null" << std::endl;
         throw std::runtime_error("Logger is null");
@@ -36,9 +37,8 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
         STX_LOGE(logger, "TimescaleDB is null");
         throw std::runtime_error("TimescaleDB is null");
     }
-    
+
     try {
-        STX_LOGI(logger, "Before connecting to IB TWS.");
         connectToIB();
         STX_LOGI(logger, "RealTimeData object created successfully.");
     } catch (const std::exception &e) {
@@ -47,16 +47,10 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
     }
 }
 
-// Destructor
 RealTimeData::~RealTimeData() {
-    {
-        std::lock_guard<std::mutex> lock(clientMutex);
-        if (client) {
-            client.reset();
-        }
-    }
-    if (running) {
-        stop();  // Ensure stop is called to clean up resources
+    stop();
+    if (readerThread.joinable()) {
+        readerThread.join();
     }
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 }
@@ -64,13 +58,9 @@ RealTimeData::~RealTimeData() {
 void RealTimeData::connectToIB() {
     std::lock_guard<std::mutex> lock(clientMutex);
 
-    // Log before creating the client object
     STX_LOGI(logger, "Creating EClientSocket.");
 
     try {
-        client = std::make_shared<EClientSocket>(this, nullptr);
-
-        // Log after creating the client object
         if (!client) {
             throw std::runtime_error("Failed to create EClientSocket");
         }
@@ -82,6 +72,17 @@ void RealTimeData::connectToIB() {
 
         if (client->eConnect(host, port, clientId)) {
             STX_LOGI(logger, "Connected to IB TWS");
+
+            reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            reader->start();
+
+            readerThread = std::thread([this]() {
+                while (client->isConnected()) {
+                    osSignal->waitForSignal();
+                    std::lock_guard<std::mutex> lock(clientMutex);
+                    reader->processMsgs();
+                }
+            });
         } else {
             STX_LOGE(logger, "Failed to connect to IB TWS.");
             stop();
@@ -98,51 +99,58 @@ void RealTimeData::connectToIB() {
 void RealTimeData::start() {
     running = true;
 
-    // Clear any existing shared memory object with the same name
     boost::interprocess::shared_memory_object::remove("RealTimeData");
     
-    // Initialize shared memory
     shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
-    shm.truncate(1024);  // Adjust size as needed
+    shm.truncate(1024);  // 根据需要调整大小
     region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
     STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
 
     std::time_t lastMinute = std::time(nullptr) / 60;
 
-    while (running) {
-        if (isMarketOpen()) {
-            requestData();
+    try {
+        while (running) {
+            if (isMarketOpen()) {
+                requestData();
 
-            std::time_t currentMinute = std::time(nullptr) / 60;
-            if (currentMinute != lastMinute) {
-                aggregateMinuteData();
-                lastMinute = currentMinute;
+                std::time_t currentMinute = std::time(nullptr) / 60;
+                if (currentMinute != lastMinute) {
+                    aggregateMinuteData();
+                    lastMinute = currentMinute;
+                }
+
+                std::this_thread::sleep_for(std::chrono::seconds(1)); 
+            } else {
+                std::this_thread::sleep_for(std::chrono::minutes(1));  
             }
-
-            std::this_thread::sleep_for(std::chrono::seconds(1));  // Adjust frequency as needed
-        } else {
-            std::this_thread::sleep_for(std::chrono::minutes(1));  // Check again after 1 minute
         }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Exception in start loop: " + std::string(e.what()));
     }
 
-    // Clean up before exiting
     stop();
 }
 
 void RealTimeData::stop() {
+    if (!running) return; // 避免重复调用
+
     running = false;
 
-    // Cleanup shared memory
+    // 清理共享内存
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
-    // Ensure the client is properly disconnected
+    // 确保客户端正确断开连接
     if (client && client->isConnected()) {
         client->eDisconnect();
         STX_LOGI(logger, "Disconnected from IB TWS");
     }
 
-    // Reset shared resources
-    client.reset();
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+        client.reset();
+        reader.reset();  // 清理 reader
+    }
+    
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
@@ -175,6 +183,7 @@ void RealTimeData::requestData() {
     // Request L1 and L2 data
     client->reqMktData(++requestId, contract, "", false, false, TagValueListSPtr());
     client->reqMktDepth(++requestId, contract, 10, true, TagValueListSPtr()); // Request 10 levels of market depth
+    STX_LOGI(logger, "data requested.");
 }
 
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
@@ -291,10 +300,11 @@ void RealTimeData::aggregateMinuteData() {
     // Write to shared memory
     writeToSharedMemory(combinedData.str());
 
-    // Insert into TimescaleDB
+    // Insert into TimescaleDB with the formatted datetime string
     timescaleDB->insertL1Data(datetime, {{"Bid", l1Prices.front()}, {"Ask", l1Prices.back()}, {"Last", close}, {"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}});
     timescaleDB->insertL2Data(datetime, l2Data);
     timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}, {"RSI", rsi}, {"MACD", macd}, {"VWAP", vwap}});
+    STX_LOGI(logger, "data written.");
 
     // Clear temporary data
     l1Prices.clear();

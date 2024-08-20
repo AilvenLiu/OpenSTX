@@ -190,12 +190,42 @@ void TimescaleDB::createTables() {
             );
         )");
 
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS historical_data (
+                date DATE PRIMARY KEY,
+                symbol TEXT,
+                open DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
+                close DOUBLE PRECISION,
+                volume DOUBLE PRECISION,
+                adj_close DOUBLE PRECISION
+            );
+        )");
+
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS options_data (
+                date DATE,
+                symbol TEXT,
+                option_type TEXT,
+                strike_price DOUBLE PRECISION,
+                expiration_date DATE,
+                implied_volatility DOUBLE PRECISION,
+                delta DOUBLE PRECISION,
+                gamma DOUBLE PRECISION,
+                theta DOUBLE PRECISION,
+                vega DOUBLE PRECISION,
+                PRIMARY KEY (date, symbol, option_type, strike_price, expiration_date)
+            );
+        )");
+
         txn.commit();
         STX_LOGI(logger, "Tables created or verified successfully.");
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error creating tables in TimescaleDB: " + std::string(e.what()));
     }
 }
+
 
 void TimescaleDB::cleanupAndExit() {
     STX_LOGI(logger, "Cleaning up resources before exit...");
@@ -282,5 +312,48 @@ void TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<
         STX_LOGI(logger, "Inserted feature data at " + datetime);
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting feature data into TimescaleDB: " + std::string(e.what()));
+    }
+}
+
+
+void TimescaleDB::insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData) {
+    STX_LOGI(logger, "Inserting historical data for date " + date);
+    try {
+        pqxx::work txn(*conn);
+        std::string query = "INSERT INTO historical_data (date, symbol, open, high, low, close, volume, adj_close) VALUES (" +
+                            txn.quote(date) + ", " +
+                            txn.quote(std::get<std::string>(historicalData.at("symbol"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("open"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("high"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("low"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("close"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("volume"))) + ", " +
+                            txn.quote(std::get<double>(historicalData.at("adj_close"))) + ");";
+        txn.exec(query);
+        txn.commit();
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error inserting historical data: " + std::string(e.what()));
+    }
+}
+
+void TimescaleDB::insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData) {
+    STX_LOGI(logger, "Inserting options data for date " + date);
+    try {
+        pqxx::work txn(*conn);
+        std::string query = "INSERT INTO options_data (date, symbol, option_type, strike_price, expiration_date, implied_volatility, delta, gamma, theta, vega) VALUES (" +
+                            txn.quote(date) + ", " +
+                            txn.quote(std::get<std::string>(optionsData.at("symbol"))) + ", " +
+                            txn.quote(std::get<std::string>(optionsData.at("option_type"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("strike_price"))) + ", " +
+                            txn.quote(std::get<std::string>(optionsData.at("expiration_date"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("implied_volatility"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("delta"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("gamma"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("theta"))) + ", " +
+                            txn.quote(std::get<double>(optionsData.at("vega"))) + ");";
+        txn.exec(query);
+        txn.commit();
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error inserting options data: " + std::string(e.what()));
     }
 }

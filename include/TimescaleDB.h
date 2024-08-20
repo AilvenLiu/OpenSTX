@@ -25,6 +25,7 @@
 #include <pqxx/pqxx>
 #include <string>
 #include <map>
+#include <variant>
 #include <vector>
 #include <memory>
 #include "Logger.h"
@@ -37,6 +38,9 @@ public:
     void insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data);
     void insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data);
     void insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features);
+
+    void insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
+    void insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData);
 
 private:
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);

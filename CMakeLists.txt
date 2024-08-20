@@ -4,6 +4,7 @@ project(OpenSTX)
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Include directories for project headers and API headers
 include_directories(${PROJECT_SOURCE_DIR}/include)
@@ -14,7 +15,9 @@ include_directories(${PROJECT_SOURCE_DIR}/third_parts/libpqxx/include)
 file(GLOB_RECURSE PROJECT_SOURCES 
     "${PROJECT_SOURCE_DIR}/src/logger/Logger.cpp"
     "${PROJECT_SOURCE_DIR}/src/database/TimescaleDB.cpp"
+    "${PROJECT_SOURCE_DIR}/src/data/IBClient.cpp"
     "${PROJECT_SOURCE_DIR}/src/data/RealTimeData.cpp"
+    "${PROJECT_SOURCE_DIR}/src/data/HistoricalDataFetcher.cpp"
     "${PROJECT_SOURCE_DIR}/src/main.cpp"
 )
 

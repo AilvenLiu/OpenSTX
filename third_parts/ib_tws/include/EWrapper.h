@@ -17,7 +17,7 @@
 #include "NewsProvider.h"
 #include "TickAttrib.h"
 #include "HistogramEntry.h"
-#include "bar.h"
+#include "Bar.h"
 #include "PriceIncrement.h"
 #include "HistoricalTick.h"
 #include "HistoricalTickBidAsk.h"

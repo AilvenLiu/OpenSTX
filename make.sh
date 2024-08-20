@@ -21,7 +21,7 @@ fi
 
 if [ -d "$BIN_DIR" ]; then
     echo "Removing old  directory..."
-    rm -rf "$bin_DIR"
+    rm -rf "$BIN_DIR"
 fi
 
 # Create build directory
