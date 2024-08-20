@@ -42,6 +42,9 @@ public:
     void insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
     void insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData);
 
+    // 获取最新的历史数据日期
+    const std::string getLastHistoricalEndDate(const std::string &symbol);
+
 private:
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
     void enableTimescaleExtension();

@@ -35,23 +35,30 @@
 #include "Contract.h"
 #include "Bar.h"
 #include "Logger.h"
+#include "TimescaleDB.h"
 
 class IBClient : public EWrapper {
 public:
-    IBClient(const std::shared_ptr<Logger>& log);
+    IBClient(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
     ~IBClient();
 
     // Connection
     bool connect(const std::string& host, int port, int clientId);
     void disconnect();
+    const bool isConnected() {
+        STX_LOGI(logger, "connection status: " + std::string(connected ? "connected." : "disconnected."));
+        return connected;
+    }
 
     // Data Requests
-    std::vector<std::map<std::string, std::variant<double, std::string>>> requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize);
-    std::vector<std::map<std::string, std::variant<double, std::string>>> requestOptionsData(const std::string& symbol, const std::string& expirationDate);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> requestOptionsData(const std::string& symbol);
 
     // EWrapper overrides
     void historicalData(TickerId reqId, const Bar& bar) override;
     void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
+    void contractDetails(int reqId, const ContractDetails &contractDetails) override;
+    void contractDetailsEnd(int reqId) override;
     void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
 
@@ -59,17 +66,20 @@ private:
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
     std::shared_ptr<Logger> logger;
+    std::shared_ptr<TimescaleDB> db;
     std::mutex mtx;
     std::condition_variable cv;
     bool dataReceived;
 
     std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
     std::vector<std::map<std::string, std::variant<double, std::string>>> optionsDataBuffer;
+    std::vector<std::string> optionExpiryDates;
 
     int nextRequestId;
     bool connected;
 
     void waitForData();
+    std::vector<std::string> getNextThreeExpiryDates(const std::string& symbol);
     void parseDateString(const std::string& dateStr, std::tm& timeStruct);
 
 private:
@@ -98,9 +108,7 @@ private:
         double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
-    void contractDetails( int reqId, const ContractDetails& contractDetails) override {}
     void bondContractDetails( int reqId, const ContractDetails& contractDetails) override {}
-    void contractDetailsEnd( int reqId) override {}
     void execDetails( int reqId, const Contract& contract, const Execution& execution) override {}
     void execDetailsEnd( int reqId) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}

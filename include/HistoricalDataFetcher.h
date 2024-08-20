@@ -30,9 +30,11 @@
 
 class HistoricalDataFetcher {
 public:
-    HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& db);
-    void fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize);
-    void fetchOptionsData(const std::string& symbol, const std::string& expirationDate);
+    HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db);
+    ~HistoricalDataFetcher();
+    void fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
+    void fetchOptionsData(const std::string& symbol);
+    void stop();
 
 private:
     void storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);

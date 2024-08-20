@@ -53,7 +53,7 @@ int main() {
     oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d-%H:%M:%S");
     std::string timestamp = oss.str();
 
-    std::string logFilePath = "logs/trading_system_" + timestamp + ".log";
+    std::string logFilePath = "logs/OpenSTX_" + timestamp + ".log";
     std::shared_ptr<Logger> logger = std::make_shared<Logger>(logFilePath);
     STX_LOGI(logger, "Start main");
 
@@ -86,7 +86,14 @@ int main() {
     }
 
     // Initialize HistoricalDataFetcher
-    HistoricalDataFetcher historicalDataFetcher(logger, timescaleDB);
+    std::shared_ptr<HistoricalDataFetcher> historicalDataFetcher;
+    try {
+        historicalDataFetcher = std::make_shared<HistoricalDataFetcher>(logger, timescaleDB);
+        STX_LOGI(logger, "Successfully initialized HistoricalDataFetcher.");
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Failed to initialize HistoricalDataFetcher: " + std::string(e.what()));
+        return 1;
+    }
 
     // Start RealTimeData in a separate thread
     std::thread dataThread([&]() {
@@ -98,12 +105,13 @@ int main() {
         }
     });
 
-    // Periodically fetch historical data (e.g., daily)
+    // Periodically fetch historical and options data (e.g., daily)
     std::thread historicalDataThread([&]() {
+        std::this_thread::sleep_for(std::chrono::seconds(30)); // wait for connection establishment of clientID = 0 
         while (running) {
             try {
-                historicalDataFetcher.fetchHistoricalData("SPY", "1 Y", "1 day");
-                historicalDataFetcher.fetchOptionsData("SPY", "2024-12-31");  // Example expiration date
+                historicalDataFetcher->fetchHistoricalData("SPY", "3 Y", "1 day", true);
+                historicalDataFetcher->fetchOptionsData("SPY");
             } catch (const std::exception &e) {
                 STX_LOGE(logger, "Exception in HistoricalDataFetcher: " + std::string(e.what()));
             }
@@ -120,10 +128,11 @@ int main() {
     STX_LOGI(logger, "Terminating the program gracefully...");
 
     dataCollector->stop(); 
+    historicalDataFetcher->stop();
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
     if (dataThread.joinable()) dataThread.join();
-    if (historicalDataThread.joinable()) historicalDataThread.join();
+    if (historicalDataThread.joinable()) dataThread.join();
 
     STX_LOGI(logger, "Program terminated successfully.");
 

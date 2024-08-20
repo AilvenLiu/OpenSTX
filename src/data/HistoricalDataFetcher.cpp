@@ -21,13 +21,31 @@
 
 #include "HistoricalDataFetcher.h"
 
-HistoricalDataFetcher::HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& db)
-    : logger(logger), db(db), ibClient(std::make_unique<IBClient>(logger)) {}
+HistoricalDataFetcher::HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db)
+    : logger(logger), db(_db), ibClient(std::make_unique<IBClient>(logger, db)) {}
 
-void HistoricalDataFetcher::fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize) {
+HistoricalDataFetcher::~HistoricalDataFetcher() {
+    STX_LOGW(logger, "Destructor called, cleaning up resources.");
+    stop();
+}
+
+void HistoricalDataFetcher::stop() {
+    ibClient->disconnect();
+    STX_LOGW(logger, "Resource released.");
+}
+
+void HistoricalDataFetcher::fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental) {
     STX_LOGI(logger, "Fetching historical data for symbol: " + symbol);
-    
-    auto historicalData = ibClient->requestHistoricalData(symbol, duration, barSize);
+
+    if (!ibClient->isConnected()) {
+        STX_LOGW(logger, "Connection is not established. Attempting to reconnect...");
+        if (!ibClient->connect("127.0.0.1", 7496, 2)) {
+            STX_LOGE(logger, "Failed to connect IBClient for historical data fetching");
+            return;
+        }
+    }
+
+    auto historicalData = ibClient->requestHistoricalData(symbol, duration, barSize, incremental);
 
     for (const auto& data : historicalData) {
         storeHistoricalData(symbol, data);
@@ -36,10 +54,18 @@ void HistoricalDataFetcher::fetchHistoricalData(const std::string& symbol, const
     STX_LOGI(logger, "Completed fetching historical data for symbol: " + symbol);
 }
 
-void HistoricalDataFetcher::fetchOptionsData(const std::string& symbol, const std::string& expirationDate) {
-    STX_LOGI(logger, "Fetching options data for symbol: " + symbol + " with expiration date: " + expirationDate);
+void HistoricalDataFetcher::fetchOptionsData(const std::string& symbol) {
+    STX_LOGI(logger, "Fetching options data for symbol: " + symbol);
 
-    auto optionsData = ibClient->requestOptionsData(symbol, expirationDate);
+    auto optionsData = ibClient->requestOptionsData(symbol);
+
+    if (!ibClient->isConnected()) {
+        STX_LOGW(logger, "Connection is not established. Attempting to reconnect...");
+        if (!ibClient->connect("127.0.0.1", 7496, 2)) { 
+            STX_LOGE(logger, "Failed to connect IBClient for options data fetching");
+            return;
+        }
+    }
 
     for (const auto& data : optionsData) {
         storeOptionsData(symbol, data);
