@@ -23,11 +23,11 @@
 #include <cmath>
 #include "RealTimeData.h"
 
-RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db):   
-        osSignal(std::make_unique<EReaderOSSignal>(2000)), 
-        client(std::make_unique<EClientSocket>(this, osSignal.get())), 
-        logger(log), timescaleDB(db), nextOrderId(0), 
-        requestId(0), yesterdayClose(0.0), running(false) {
+RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
+    : osSignal(std::make_unique<EReaderOSSignal>(2000)), 
+      client(std::make_unique<EClientSocket>(this, osSignal.get())), 
+      logger(log), timescaleDB(db), nextOrderId(0), 
+      requestId(0), yesterdayClose(0.0), running(false) {
 
     if (!logger) {
         std::cerr << "Logger is null" << std::endl;
@@ -99,33 +99,44 @@ void RealTimeData::connectToIB() {
 void RealTimeData::start() {
     running = true;
 
-    boost::interprocess::shared_memory_object::remove("RealTimeData");
-    
-    shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
-    shm.truncate(1024);  // 根据需要调整大小
-    region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
-    STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
-
-    std::time_t lastMinute = std::time(nullptr) / 60;
-
     try {
-        while (running) {
-            if (isMarketOpen()) {
-                requestData();
+        boost::interprocess::shared_memory_object::remove("RealTimeData");
 
+        shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
+        shm.truncate(1024);  // 根据需要调整大小
+        region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
+        STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
+
+        std::time_t lastMinute = std::time(nullptr) / 60;
+
+        // 数据请求线程
+        std::thread requestDataThread([&]() {
+            while (running) {
+                if (isMarketOpen()) {
+                    requestDataWithRetry();
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                } else {
+                    std::this_thread::sleep_for(std::chrono::minutes(1));
+                }
+            }
+        });
+
+        // 数据处理线程
+        std::thread processDataThread([&]() {
+            while (running) {
                 std::time_t currentMinute = std::time(nullptr) / 60;
                 if (currentMinute != lastMinute) {
                     aggregateMinuteData();
                     lastMinute = currentMinute;
                 }
-
-                std::this_thread::sleep_for(std::chrono::seconds(1)); 
-            } else {
-                std::this_thread::sleep_for(std::chrono::minutes(1));  
+                std::this_thread::sleep_for(std::chrono::seconds(1));
             }
-        }
+        });
+
+        requestDataThread.join();
+        processDataThread.join();
     } catch (const std::exception &e) {
-        STX_LOGE(logger, "Exception in start loop: " + std::string(e.what()));
+        STX_LOGE(logger, "Exception in start: " + std::string(e.what()));
     }
 
     stop();
@@ -154,23 +165,60 @@ void RealTimeData::stop() {
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
+void RealTimeData::requestDataWithRetry() {
+    if (!client->isConnected()) {
+        STX_LOGW(logger, "Client is not connected. Attempting to reconnect...");
+        try {
+            connectToIB();
+        } catch (const std::exception &e) {
+            STX_LOGE(logger, "Failed to reconnect: " + std::string(e.what()));
+            return;
+        }
+    }
+    
+    try {
+        requestData();
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Data request failed after reconnect: " + std::string(e.what()));
+    }
+}
+
 bool RealTimeData::isMarketOpen() {
     std::time_t nyTime = getNYTime();
     std::tm *tm = std::localtime(&nyTime);
 
     char buf[100];
     std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm);
-    STX_LOGI(logger, "Current New York Time: " + std::string(buf));
 
     // Market open from 9:30 to 16:00
-    return (tm->tm_hour > 9 && tm->tm_hour < 16) || (tm->tm_hour == 9 && tm->tm_min >= 30);
+    bool open = (tm->tm_hour > 9 && tm->tm_hour < 16) || (tm->tm_hour == 9 && tm->tm_min >= 30);
+
+    // Check if it's a weekend
+    bool weekend = (tm->tm_wday == 0 || tm->tm_wday == 6); // Sunday == 0, Saturday == 6
+
+    if (open && !weekend) {
+        STX_LOGI(logger, "Current New York Time: " + std::string(buf) + " - Market is open.");
+        return true;
+    } else {
+        STX_LOGW(logger, "Current New York Time: " + std::string(buf) + " - Market is closed.");
+        return false;
+    }
 }
 
 std::time_t RealTimeData::getNYTime() {
     std::time_t t = std::time(nullptr);
     std::tm *utc_tm = std::gmtime(&t);
-    utc_tm->tm_hour -= 4;  // UTC-4 for Eastern Daylight Time (EDT)
-    return std::mktime(utc_tm);
+
+    // 考虑夏令时，手动计算 EST/EDT 时间
+    utc_tm->tm_hour -= 5;  // 默认设置为 EST (UTC-5)
+    std::time_t localTime = std::mktime(utc_tm);
+
+    std::tm *ny_tm = std::localtime(&localTime);
+    if (ny_tm->tm_isdst > 0) {
+        ny_tm->tm_hour += 1;  // 如果是夏令时，将时间调整为 EDT (UTC-4)
+    }
+
+    return std::mktime(ny_tm);
 }
 
 void RealTimeData::requestData() {
@@ -183,7 +231,6 @@ void RealTimeData::requestData() {
     // Request L1 and L2 data
     client->reqMktData(++requestId, contract, "", false, false, TagValueListSPtr());
     client->reqMktDepth(++requestId, contract, 10, true, TagValueListSPtr()); // Request 10 levels of market depth
-    STX_LOGI(logger, "data requested.");
 }
 
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
@@ -255,6 +302,7 @@ void RealTimeData::nextValidId(OrderId orderId) {
 
 void RealTimeData::aggregateMinuteData() {
     if (l1Prices.empty()) {
+        STX_LOGW(logger, "L1 data is empty.");
         return;  // No data to aggregate
     }
 
@@ -301,10 +349,21 @@ void RealTimeData::aggregateMinuteData() {
     writeToSharedMemory(combinedData.str());
 
     // Insert into TimescaleDB with the formatted datetime string
-    timescaleDB->insertL1Data(datetime, {{"Bid", l1Prices.front()}, {"Ask", l1Prices.back()}, {"Last", close}, {"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}});
-    timescaleDB->insertL2Data(datetime, l2Data);
-    timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}, {"RSI", rsi}, {"MACD", macd}, {"VWAP", vwap}});
-    STX_LOGI(logger, "data written.");
+    if (timescaleDB->insertL1Data(datetime, {{"Bid", l1Prices.front()}, {"Ask", l1Prices.back()}, {"Last", close}, {"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}})) {
+        STX_LOGI(logger, "L1 data written to db successfully: " + datetime);
+    } else {
+        STX_LOGE(logger, "L1 data write to db failed: " + datetime);
+    }
+    if (timescaleDB->insertL2Data(datetime, l2Data)) {
+        STX_LOGI(logger, "L2 data written to db successfully: " + datetime);
+    } else {
+        STX_LOGE(logger, "L2 data write to db failed: " + datetime);
+    }
+    if (timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}, {"RSI", rsi}, {"MACD", macd}, {"VWAP", vwap}})) {
+        STX_LOGI(logger, "Feature data written to db successfully: " + datetime);
+    } else {
+        STX_LOGE(logger, "Feature data write to db failed: " + datetime);
+    }
 
     // Clear temporary data
     l1Prices.clear();
@@ -319,7 +378,6 @@ void RealTimeData::writeToSharedMemory(const std::string &data) {
 }
 
 double RealTimeData::calculateRSI() {
-    // Implement RSI calculation based on l1Prices
     if (l1Prices.size() < 2) return 50.0; // Return neutral value if not enough data
 
     double gains = 0.0, losses = 0.0;
@@ -337,7 +395,6 @@ double RealTimeData::calculateRSI() {
 }
 
 double RealTimeData::calculateMACD() {
-    // Implement MACD calculation based on l1Prices
     if (l1Prices.size() < 26) return 0.0;  // Not enough data
 
     double shortEMA = calculateEMA(12);
@@ -360,7 +417,6 @@ double RealTimeData::calculateEMA(int period) {
 }
 
 double RealTimeData::calculateVWAP() {
-    // Implement VWAP calculation based on l1Prices and l1Volumes
     if (l1Prices.empty() || l1Volumes.empty()) return 0.0;
 
     double cumulativePriceVolume = 0.0;

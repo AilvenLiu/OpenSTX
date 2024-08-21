@@ -107,16 +107,22 @@ int main() {
 
     // Periodically fetch historical and options data (e.g., daily)
     std::thread historicalDataThread([&]() {
-        std::this_thread::sleep_for(std::chrono::seconds(30)); // wait for connection establishment of clientID = 0 
+        std::this_thread::sleep_for(std::chrono::seconds(30)); // Wait for RealTimeData connection to stabilize
+
         while (running) {
             try {
-                historicalDataFetcher->fetchHistoricalData("SPY", "3 Y", "1 day", true);
-                historicalDataFetcher->fetchOptionsData("SPY");
+                if (!dataCollector->isMarketOpen()) {
+                    // Request historical data incrementally, one day at a time.
+                    historicalDataFetcher->fetchHistoricalData("SPY", "1 D", "1 day", true);
+                    // Fetch options data as required (adjust frequency as needed).
+                    historicalDataFetcher->fetchOptionsData("SPY");
+                } else {
+                    STX_LOGI(logger, "Market is open. Waiting for an hour before checking again.");
+                    std::this_thread::sleep_for(std::chrono::hours(1)); // Wait 1 hour if the market is open
+                }
             } catch (const std::exception &e) {
                 STX_LOGE(logger, "Exception in HistoricalDataFetcher: " + std::string(e.what()));
             }
-
-            std::this_thread::sleep_for(std::chrono::hours(24));  // Run daily
         }
     });
 
@@ -132,7 +138,7 @@ int main() {
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
     if (dataThread.joinable()) dataThread.join();
-    if (historicalDataThread.joinable()) dataThread.join();
+    if (historicalDataThread.joinable()) historicalDataThread.join();
 
     STX_LOGI(logger, "Program terminated successfully.");
 

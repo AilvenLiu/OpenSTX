@@ -53,25 +53,22 @@ bool IBClient::connect(const std::string& host, int port, int clientId) {
     }
 }
 
-
 void IBClient::disconnect() {
     try {
-        if (connected && connected) {
+        if (connected) {
             client->eDisconnect();
             connected = false;
             STX_LOGI(logger, "Disconnected from IB TWS");
         }
-        client.reset();
     } catch (const std::exception& e) {
         STX_LOGE(logger, "Exception during disconnect: " + std::string(e.what()));
     }
 }
 
-std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental) {
+void IBClient::requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental) {
     historicalDataBuffer.clear();
     STX_LOGI(logger, "Requesting historical data for " + symbol);
 
-    // 获取最后一次的结束日期（增量获取的情况下）
     std::string endDateTime = "";
     if (incremental) {
         endDateTime = db->getLastHistoricalEndDate(symbol);
@@ -90,12 +87,14 @@ std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::
     client->reqHistoricalData(nextRequestId++, contract, endDateTime, duration, barSize, whatToShow, useRTH, formatDate, false, TagValueListSPtr());
 
     waitForData();
+    STX_LOGI(logger, "Completed historical data request for " + symbol);
+}
 
-    STX_LOGI(logger, "Received historical data for " + symbol);
+std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::getHistoricalData() {
     return historicalDataBuffer;
 }
 
-std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::requestOptionsData(const std::string& symbol) {
+void IBClient::requestOptionsData(const std::string& symbol) {
     optionsDataBuffer.clear();
     optionExpiryDates.clear();
     STX_LOGI(logger, "Requesting options data for " + symbol);
@@ -113,23 +112,11 @@ std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::
     }
 
     waitForData();
-    STX_LOGI(logger, "Received options data for " + symbol);
-    return optionsDataBuffer;
+    STX_LOGI(logger, "Completed options data request for " + symbol);
 }
 
-std::vector<std::string> IBClient::getNextThreeExpiryDates(const std::string& symbol) {
-    optionExpiryDates.clear();
-
-    Contract contract;
-    contract.symbol = symbol;
-    contract.secType = "OPT";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
-
-    client->reqContractDetails(nextRequestId++, contract);
-    waitForData();
-
-    return optionExpiryDates;
+std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::getOptionsData() {
+    return optionsDataBuffer;
 }
 
 void IBClient::historicalData(TickerId reqId, const Bar& bar) {
@@ -146,6 +133,12 @@ void IBClient::historicalData(TickerId reqId, const Bar& bar) {
     data["volume"] = static_cast<double>(bar.volume);
 
     historicalDataBuffer.push_back(data);
+}
+
+void IBClient::historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) {
+    std::unique_lock<std::mutex> lock(mtx);
+    dataReceived = true;
+    cv.notify_one();
 }
 
 void IBClient::contractDetails(int reqId, const ContractDetails& details) {
@@ -165,12 +158,6 @@ void IBClient::contractDetailsEnd(int reqId) {
     STX_LOGI(logger, "Completed receiving contract details for request ID: " + std::to_string(reqId));
 }
 
-void IBClient::historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) {
-    std::unique_lock<std::mutex> lock(mtx);
-    dataReceived = true;
-    cv.notify_one();
-}
-
 void IBClient::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
     STX_LOGE(logger, "Error: " + std::to_string(id) + " - " + std::to_string(errorCode) + " - " + errorString);
     std::unique_lock<std::mutex> lock(mtx);
@@ -188,8 +175,22 @@ void IBClient::waitForData() {
     dataReceived = false;
 }
 
+std::vector<std::string> IBClient::getNextThreeExpiryDates(const std::string& symbol) {
+    optionExpiryDates.clear();
+
+    Contract contract;
+    contract.symbol = symbol;
+    contract.secType = "OPT";
+    contract.exchange = "SMART";
+    contract.currency = "USD";
+
+    client->reqContractDetails(nextRequestId++, contract);
+    waitForData();
+
+    return optionExpiryDates;
+}
+
 void IBClient::parseDateString(const std::string& dateStr, std::tm& timeStruct) {
-    // 解析时间字符串，例如：yyyymmdd hh:mm:ss
     std::istringstream ss(dateStr);
     ss >> std::get_time(&timeStruct, "%Y%m%d %H:%M:%S");
 }

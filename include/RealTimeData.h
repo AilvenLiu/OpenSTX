@@ -64,18 +64,7 @@ public:
 
     void start();
     void stop();
-    void connectToIB();
     bool isMarketOpen();
-    void requestData();
-    std::time_t getNYTime();
-    void aggregateMinuteData();
-
-    // EWrapper interface methods
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
-    void tickSize(TickerId tickerId, TickType field, Decimal size) override;
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
-    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
-    void nextValidId(OrderId orderId) override;
 
 private:
     std::unique_ptr<EReaderOSSignal> osSignal;
@@ -113,6 +102,12 @@ private:
     std::mutex clientMutex;
 
 private:
+    void connectToIB();
+    void requestData();
+    std::time_t getNYTime();
+    void aggregateMinuteData();
+    void requestDataWithRetry();
+
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
     void calculateAndStoreFeatures(const std::string &datetime, double open, double high, double low, double close, double volume);
@@ -120,6 +115,13 @@ private:
     double calculateMACD();
     double calculateEMA(int period);
     double calculateVWAP();
+
+    // EWrapper interface methods
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
+    void tickSize(TickerId tickerId, TickType field, Decimal size) override;
+    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
+    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
+    void nextValidId(OrderId orderId) override;
 
     // Unused EWrapper methods, implement to avoid a pure virtual class (but may be used later below)
     void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}

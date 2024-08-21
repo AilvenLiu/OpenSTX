@@ -225,7 +225,7 @@ void TimescaleDB::cleanupAndExit() {
     exit(EXIT_FAILURE);
 }
 
-void TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data) {
+bool TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data) {
     STX_LOGI(logger, "Inserting L1 data at " + datetime);
     try {
         pqxx::work txn(*conn);
@@ -245,12 +245,15 @@ void TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::
         txn.commit();
 
         STX_LOGI(logger, "Inserted L1 data at " + datetime);
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting L1 data into TimescaleDB: " + std::string(e.what()));
+        return false;
     }
+    return false;
 }
 
-void TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data) {
+bool TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data) {
     STX_LOGI(logger, "Inserting L2 data at " + datetime);
     try {
         pqxx::work txn(*conn);
@@ -270,14 +273,16 @@ void TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<st
         }
 
         txn.commit();
-
         STX_LOGI(logger, "Inserted L2 data at " + datetime);
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting L2 data into TimescaleDB: " + std::string(e.what()));
+        return false;
     }
+    return false;
 }
 
-void TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features) {
+bool TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features) {
     STX_LOGI(logger, "Inserting feature data at " + datetime);
     try {
         pqxx::work txn(*conn);
@@ -293,14 +298,16 @@ void TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<
 
         txn.exec(query);
         txn.commit();
-
         STX_LOGI(logger, "Inserted feature data at " + datetime);
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting feature data into TimescaleDB: " + std::string(e.what()));
+        return false;
     }
+    return false;
 }
 
-void TimescaleDB::insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData) {
+bool TimescaleDB::insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData) {
     STX_LOGI(logger, "Inserting historical data for date " + date);
     try {
         pqxx::work txn(*conn);
@@ -315,12 +322,15 @@ void TimescaleDB::insertHistoricalData(const std::string &date, const std::map<s
                             txn.quote(std::get<double>(historicalData.at("adj_close"))) + ");";
         txn.exec(query);
         txn.commit();
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting historical data: " + std::string(e.what()));
+        return false;
     }
+    return false;
 }
 
-void TimescaleDB::insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData) {
+bool TimescaleDB::insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData) {
     STX_LOGI(logger, "Inserting options data for date " + date);
     try {
         pqxx::work txn(*conn);
@@ -337,9 +347,12 @@ void TimescaleDB::insertOptionsData(const std::string &date, const std::map<std:
                             txn.quote(std::get<double>(optionsData.at("vega"))) + ");";
         txn.exec(query);
         txn.commit();
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting options data: " + std::string(e.what()));
+        return false;
     }
+    return false;
 }
 
 const std::string TimescaleDB::getLastHistoricalEndDate(const std::string &symbol) {

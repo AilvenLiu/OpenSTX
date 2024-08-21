@@ -45,14 +45,17 @@ public:
     // Connection
     bool connect(const std::string& host, int port, int clientId);
     void disconnect();
-    const bool isConnected() {
-        STX_LOGI(logger, "connection status: " + std::string(connected ? "connected." : "disconnected."));
+    inline const bool isConnected() {
+        STX_LOGI(logger, "Connection status: " + std::string(connected ? "connected." : "disconnected."));
         return connected;
     }
 
     // Data Requests
-    std::vector<std::map<std::string, std::variant<double, std::string>>> requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
-    std::vector<std::map<std::string, std::variant<double, std::string>>> requestOptionsData(const std::string& symbol);
+    void requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> getHistoricalData();
+
+    void requestOptionsData(const std::string& symbol);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> getOptionsData();
 
     // EWrapper overrides
     void historicalData(TickerId reqId, const Bar& bar) override;
@@ -81,7 +84,7 @@ private:
     void waitForData();
     std::vector<std::string> getNextThreeExpiryDates(const std::string& symbol);
     void parseDateString(const std::string& dateStr, std::tm& timeStruct);
-
+    
 private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override {};

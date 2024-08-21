@@ -24,6 +24,9 @@
 
 #include <memory>
 #include <variant>
+#include <string>
+#include <vector>
+#include <ctime>
 #include "IBClient.h"
 #include "TimescaleDB.h"
 #include "Logger.h"
@@ -35,8 +38,15 @@ public:
     void fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
     void fetchOptionsData(const std::string& symbol);
     void stop();
+    inline const bool isConnected() const {
+        return ibClient->isConnected();
+    }
 
 private:
+    std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
+    std::string calculateStartDateFromDuration(const std::string& duration);
+    std::string calculateEndDateFromDuration(const std::string& startDate, const std::string& duration);
+    std::string getCurrentDate();
     void storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
     void storeOptionsData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& optionsData);
 
@@ -44,5 +54,6 @@ private:
     std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<IBClient> ibClient;
 };
+
 
 #endif
