@@ -19,25 +19,28 @@
  * Date: 2024
  *************************************************************************/
 
-#include "HistoricalDataFetcher.h"
+#include "DailyDataFetcher.h"
 #include <sstream>
 #include <iomanip>
+#include <cmath>
+#include <algorithm>
+#include <stdexcept>
 
-HistoricalDataFetcher::HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db)
+DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db)
     : logger(logger), db(_db), ibClient(std::make_unique<IBClient>(logger, db)) {}
 
-HistoricalDataFetcher::~HistoricalDataFetcher() {
+DailyDataFetcher::~DailyDataFetcher() {
     STX_LOGW(logger, "Destructor called, cleaning up resources.");
     stop();
 }
 
-void HistoricalDataFetcher::stop() {
+void DailyDataFetcher::stop() {
     ibClient->disconnect();
-    STX_LOGW(logger, "Resource released.");
+    STX_LOGW(logger, "Resources released.");
 }
 
-void HistoricalDataFetcher::fetchHistoricalData(const std::string& symbol, const std::string& duration = "3 Y", const std::string& barSize = "1 day", bool incremental = true) {
-    STX_LOGI(logger, "Fetching historical data for symbol: " + symbol);
+void DailyDataFetcher::fetchAndProcessHistoricalData(const std::string& symbol, const std::string& duration, bool incremental) {
+    STX_LOGI(logger, "Fetching and processing historical data for symbol: " + symbol);
 
     if (!ibClient->isConnected()) {
         STX_LOGW(logger, "Connection is not established. Attempting to reconnect...");
@@ -62,39 +65,19 @@ void HistoricalDataFetcher::fetchHistoricalData(const std::string& symbol, const
     auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
     for (const auto& range : dateRanges) {
-        ibClient->requestHistoricalData(symbol, range.first, barSize, incremental);
+        ibClient->requestHistoricalData(symbol, range.first, "1 day", incremental);
         auto historicalData = ibClient->getHistoricalData();
 
         for (const auto& data : historicalData) {
             storeHistoricalData(symbol, data);
+            calculateAndStoreOptionsData(std::get<std::string>(data.at("date")), data);
         }
     }
 
-    STX_LOGI(logger, "Completed fetching historical data for symbol: " + symbol);
+    STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + symbol);
 }
 
-void HistoricalDataFetcher::fetchOptionsData(const std::string& symbol) {
-    STX_LOGI(logger, "Fetching options data for symbol: " + symbol);
-
-    if (!ibClient->isConnected()) {
-        STX_LOGW(logger, "Connection is not established. Attempting to reconnect...");
-        if (!ibClient->connect("127.0.0.1", 7496, 2)) { 
-            STX_LOGE(logger, "Failed to connect IBClient for options data fetching");
-            return;
-        }
-    }
-
-    ibClient->requestOptionsData(symbol);
-    auto optionsData = ibClient->getOptionsData();
-
-    for (const auto& data : optionsData) {
-        storeOptionsData(symbol, data);
-    }
-
-    STX_LOGI(logger, "Completed fetching options data for symbol: " + symbol);
-}
-
-void HistoricalDataFetcher::storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+void DailyDataFetcher::storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
     std::string date = std::get<std::string>(historicalData.at("date"));
     if (db->insertHistoricalData(date, {
             {"symbol", symbol},
@@ -104,32 +87,46 @@ void HistoricalDataFetcher::storeHistoricalData(const std::string& symbol, const
             {"close", std::get<double>(historicalData.at("close"))},
             {"volume", std::get<double>(historicalData.at("volume"))}})
     ) {
-        STX_LOGI(logger, std::string("Historical data written to db success: ") + symbol + " " + date );
+        STX_LOGI(logger, "Historical data written to db successfully: " + symbol + " " + date);
     } else {
-        STX_LOGE(logger, std::string("Historical data written to db failed: ") + symbol + " " + date );
+        STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
     }
 }
 
-void HistoricalDataFetcher::storeOptionsData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& optionsData) {
-    std::string date = std::get<std::string>(optionsData.at("date"));
-    if (db->insertOptionsData(date, {
-            {"symbol", symbol},
-            {"option_type", std::get<std::string>(optionsData.at("option_type"))},
-            {"strike_price", std::get<double>(optionsData.at("strike_price"))},
-            {"expiration_date", std::get<std::string>(optionsData.at("expiration_date"))},
-            {"implied_volatility", std::get<double>(optionsData.at("implied_volatility"))},
-            {"delta", std::get<double>(optionsData.at("delta"))},
-            {"gamma", std::get<double>(optionsData.at("gamma"))},
-            {"theta", std::get<double>(optionsData.at("theta"))},
-            {"vega", std::get<double>(optionsData.at("vega"))}})
-    ) {
-        STX_LOGI(logger, std::string("Option data written to db success: ") + symbol + " " + date );
+void DailyDataFetcher::calculateAndStoreOptionsData(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+    STX_LOGI(logger, "Calculating and storing options data for date: " + date);
+
+    // 获取股票价格和其他相关数据
+    double spotPrice = std::get<double>(historicalData.at("close"));
+    double strikePrice = spotPrice * 1.05;  // 计算期权时需要使用的行权价
+    double timeToExpiration = 30.0 / 365.0; // 假设期权到期时间为30天
+    double riskFreeRate = 0.01; // 无风险利率
+
+    // 计算隐含波动率、Delta、Gamma、Theta、Vega
+    double impliedVolatility = calculateImpliedVolatility(historicalData);
+    double delta = calculateDelta(spotPrice, strikePrice, timeToExpiration, riskFreeRate, impliedVolatility);
+    double gamma = calculateGamma(delta, spotPrice, impliedVolatility, timeToExpiration);
+    double theta = calculateTheta(spotPrice, strikePrice, timeToExpiration, riskFreeRate, impliedVolatility);
+    double vega = calculateVega(spotPrice, timeToExpiration, impliedVolatility);
+
+    // 插入计算出的期权数据到数据库
+    std::map<std::string, std::variant<double, std::string>> optionsData = {
+        {"symbol", "SPY"},
+        {"implied_volatility", impliedVolatility},
+        {"delta", delta},
+        {"gamma", gamma},
+        {"theta", theta},
+        {"vega", vega}
+    };
+
+    if (db->insertDailyOptionsData(date, optionsData)) {
+        STX_LOGI(logger, "Options data calculated and stored successfully for date: " + date);
     } else {
-        STX_LOGE(logger, std::string("Option data written to db failed: ") + symbol + " " + date );
+        STX_LOGE(logger, "Failed to store options data for date: " + date);
     }
 }
 
-std::vector<std::pair<std::string, std::string>> HistoricalDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {
+std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {
     std::vector<std::pair<std::string, std::string>> dateRanges;
     std::tm startTm = {};
     std::tm endTm = {};
@@ -142,7 +139,7 @@ std::vector<std::pair<std::string, std::string>> HistoricalDataFetcher::splitDat
 
     while (std::difftime(std::mktime(&endTm), std::mktime(&startTm)) > 0) {
         std::tm nextTm = startTm;
-        nextTm.tm_mon += 1; // 每次增加一个月
+        nextTm.tm_mday += 1; // 每次增加一天
         if (std::mktime(&nextTm) > std::mktime(&endTm)) {
             nextTm = endTm;
         }
@@ -161,7 +158,7 @@ std::vector<std::pair<std::string, std::string>> HistoricalDataFetcher::splitDat
     return dateRanges;
 }
 
-std::string HistoricalDataFetcher::calculateStartDateFromDuration(const std::string& duration) {
+std::string DailyDataFetcher::calculateStartDateFromDuration(const std::string& duration) {
     std::tm tm = {};
     std::time_t now = std::time(nullptr);
     tm = *std::localtime(&now);
@@ -178,16 +175,50 @@ std::string HistoricalDataFetcher::calculateStartDateFromDuration(const std::str
         }
     }
 
-    // 确保时间格式为%Y-%m-%d %H:%M:%S
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
 }
 
-std::string HistoricalDataFetcher::getCurrentDate() {
+std::string DailyDataFetcher::getCurrentDate() {
     std::time_t t = std::time(nullptr);
     std::tm tm = *std::localtime(&t);
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
+}
+
+// 计算期权的隐含波动率
+double DailyDataFetcher::calculateImpliedVolatility(const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+    double closePrice = std::get<double>(historicalData.at("close"));
+    double highPrice = std::get<double>(historicalData.at("high"));
+    double lowPrice = std::get<double>(historicalData.at("low"));
+
+    return (highPrice - lowPrice) / closePrice;
+}
+
+// 计算期权的 Delta
+double DailyDataFetcher::calculateDelta(double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility) {
+    double d1 = (std::log(spotPrice / strikePrice) + (riskFreeRate + 0.5 * std::pow(volatility, 2)) * timeToExpiration) / (volatility * std::sqrt(timeToExpiration));
+    return std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d1, 2)) / (volatility * spotPrice * std::sqrt(2 * M_PI * timeToExpiration));
+}
+
+// 计算期权的 Gamma
+double DailyDataFetcher::calculateGamma(double delta, double spotPrice, double volatility, double timeToExpiration) {
+    return delta
+
+ / (spotPrice * volatility * std::sqrt(timeToExpiration));
+}
+
+// 计算期权的 Theta
+double DailyDataFetcher::calculateTheta(double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility) {
+    double d1 = (std::log(spotPrice / strikePrice) + (riskFreeRate + 0.5 * std::pow(volatility, 2)) * timeToExpiration) / (volatility * std::sqrt(timeToExpiration));
+    double d2 = d1 - volatility * std::sqrt(timeToExpiration);
+    return -spotPrice * std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d1, 2)) * volatility / (2 * std::sqrt(2 * M_PI * timeToExpiration)) -
+           riskFreeRate * strikePrice * std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d2, 2)) / (volatility * std::sqrt(2 * M_PI * timeToExpiration));
+}
+
+// 计算期权的 Vega
+double DailyDataFetcher::calculateVega(double spotPrice, double timeToExpiration, double volatility) {
+    return spotPrice * std::sqrt(timeToExpiration) * std::exp(-0.5 * std::pow(volatility, 2)) / std::sqrt(2 * M_PI);
 }

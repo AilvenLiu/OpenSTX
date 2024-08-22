@@ -41,6 +41,7 @@ public:
 
     bool insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
     bool insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData);
+    bool insertDailyOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyOptionsData);
 
     // 获取最新的历史数据日期
     const std::string getLastHistoricalEndDate(const std::string &symbol);
@@ -62,17 +63,6 @@ private:
 
     // for unit test
     friend class TimescaleDBAccessor;
-};
-
-class TimescaleDBAccessor {
-public:
-    static pqxx::connection* getConnection(TimescaleDB& db) {
-        return db.conn;
-    }
-
-    static void callCreateDatabase(TimescaleDB& db, const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port) {
-        db.createDatabase(dbname, user, password, host, port);
-    }
 };
 
 #endif // TIMESCALEDB_H

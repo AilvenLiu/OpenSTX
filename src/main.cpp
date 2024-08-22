@@ -27,7 +27,7 @@
 #include <memory>
 
 #include "RealTimeData.h"
-#include "HistoricalDataFetcher.h"
+#include "DailyDataFetcher.h"
 #include "TimescaleDB.h"
 #include "Logger.h"
 #include "Config.h"
@@ -85,13 +85,13 @@ int main() {
         return 1;
     }
 
-    // Initialize HistoricalDataFetcher
-    std::shared_ptr<HistoricalDataFetcher> historicalDataFetcher;
+    // Initialize DailyDataFetcher
+    std::shared_ptr<DailyDataFetcher> historicalDataFetcher;
     try {
-        historicalDataFetcher = std::make_shared<HistoricalDataFetcher>(logger, timescaleDB);
-        STX_LOGI(logger, "Successfully initialized HistoricalDataFetcher.");
+        historicalDataFetcher = std::make_shared<DailyDataFetcher>(logger, timescaleDB);
+        STX_LOGI(logger, "Successfully initialized DailyDataFetcher.");
     } catch (const std::exception &e) {
-        STX_LOGE(logger, "Failed to initialize HistoricalDataFetcher: " + std::string(e.what()));
+        STX_LOGE(logger, "Failed to initialize DailyDataFetcher: " + std::string(e.what()));
         return 1;
     }
 
@@ -121,7 +121,7 @@ int main() {
                     std::this_thread::sleep_for(std::chrono::hours(1)); // Wait 1 hour if the market is open
                 }
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception in HistoricalDataFetcher: " + std::string(e.what()));
+                STX_LOGE(logger, "Exception in DailyDataFetcher: " + std::string(e.what()));
             }
         }
     });

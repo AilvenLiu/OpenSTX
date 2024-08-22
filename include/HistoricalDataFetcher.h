@@ -19,24 +19,23 @@
  * Date: 2024
  *************************************************************************/
 
-#ifndef HISTORICALDATAFERCHER_H
-#define HISTORICALDATAFERCHER_H
+#ifndef DAILY_DATA_FERCHER_H
+#define DAILY_DATA_FERCHER_H
 
 #include <memory>
 #include <variant>
 #include <string>
 #include <vector>
-#include <ctime>
+#include <map>
 #include "IBClient.h"
 #include "TimescaleDB.h"
 #include "Logger.h"
 
-class HistoricalDataFetcher {
+class DailyDataFetcher {
 public:
-    HistoricalDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db);
-    ~HistoricalDataFetcher();
-    void fetchHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
-    void fetchOptionsData(const std::string& symbol);
+    DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db);
+    ~DailyDataFetcher();
+    void fetchAndProcessHistoricalData(const std::string& symbol, const std::string& duration, bool incremental);
     void stop();
     inline const bool isConnected() const {
         return ibClient->isConnected();
@@ -45,14 +44,19 @@ public:
 private:
     std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
     std::string calculateStartDateFromDuration(const std::string& duration);
-    std::string calculateEndDateFromDuration(const std::string& startDate, const std::string& duration);
     std::string getCurrentDate();
     void storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
-    void storeOptionsData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& optionsData);
+    void calculateAndStoreOptionsData(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData);
 
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<IBClient> ibClient;
+
+    double calculateImpliedVolatility(const std::map<std::string, std::variant<double, std::string>>& historicalData);
+    double calculateDelta(double impliedVolatility, double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility);
+    double calculateGamma(double delta, double spotPrice, double volatility, double timeToExpiration);
+    double calculateTheta(double impliedVolatility, double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility);
+    double calculateVega(double impliedVolatility, double spotPrice, double timeToExpiration);
 };
 
 

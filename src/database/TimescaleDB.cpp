@@ -180,11 +180,12 @@ void TimescaleDB::createTables() {
         )");
 
         txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS historical_data (
+            CREATE TABLE IF NOT EXISTS daily_data (
                 date DATE PRIMARY KEY,
                 symbol TEXT,
                 open DOUBLE PRECISION,
-                high DOUBLE PRECISION,                low DOUBLE PRECISION,
+                high DOUBLE PRECISION,
+                low DOUBLE PRECISION,
                 close DOUBLE PRECISION,
                 volume DOUBLE PRECISION,
                 adj_close DOUBLE PRECISION
@@ -192,18 +193,26 @@ void TimescaleDB::createTables() {
         )");
 
         txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS options_data (
-                date DATE,
+            CREATE TABLE IF NOT EXISTS realtime_option (
+                datetime TIMESTAMPTZ PRIMARY KEY,
                 symbol TEXT,
-                option_type TEXT,
-                strike_price DOUBLE PRECISION,
-                expiration_date DATE,
                 implied_volatility DOUBLE PRECISION,
                 delta DOUBLE PRECISION,
                 gamma DOUBLE PRECISION,
                 theta DOUBLE PRECISION,
-                vega DOUBLE PRECISION,
-                PRIMARY KEY (date, symbol, option_type, strike_price, expiration_date)
+                vega DOUBLE PRECISION
+            );
+        )");
+
+        txn.exec(R"(
+            CREATE TABLE IF NOT EXISTS daily_option (
+                date DATE PRIMARY KEY,
+                symbol TEXT,
+                implied_volatility DOUBLE PRECISION,
+                delta DOUBLE PRECISION,
+                gamma DOUBLE PRECISION,
+                theta DOUBLE PRECISION,
+                vega DOUBLE PRECISION
             );
         )");
 
@@ -353,6 +362,28 @@ bool TimescaleDB::insertOptionsData(const std::string &date, const std::map<std:
         return false;
     }
     return false;
+}
+
+bool TimescaleDB::insertDailyOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyOptionsData) {
+    STX_LOGI(logger, "Inserting daily options data for date " + date);
+    try {
+        pqxx::work txn(*conn);
+        std::string query = "INSERT INTO daily_option (date, symbol, implied_volatility, delta, gamma, theta, vega) VALUES (" +
+                            txn.quote(date) + ", " +
+                            txn.quote(std::get<std::string>(dailyOptionsData.at("symbol"))) + ", " +
+                            txn.quote(std::get<double>(dailyOptionsData.at("implied_volatility"))) + ", " +
+                            txn.quote(std::get<double>(dailyOptionsData.at("delta"))) + ", " +
+                            txn.quote(std::get<double>(dailyOptionsData.at("gamma"))) + ", " +
+                            txn.quote(std::get<double>(dailyOptionsData.at("theta"))) + ", " +
+                            txn.quote(std::get<double>(dailyOptionsData.at("vega"))) + ");";
+        txn.exec(query);
+        txn.commit();
+        STX_LOGI(logger, "Inserted daily options data for date " + date);
+        return true;
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error inserting daily options data: " + std::string(e.what()));
+        return false;
+    }
 }
 
 const std::string TimescaleDB::getLastHistoricalEndDate(const std::string &symbol) {

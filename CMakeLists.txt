@@ -18,7 +18,7 @@ file(GLOB_RECURSE PROJECT_SOURCES
     "${PROJECT_SOURCE_DIR}/src/database/TimescaleDB.cpp"
     "${PROJECT_SOURCE_DIR}/src/data/IBClient.cpp"
     "${PROJECT_SOURCE_DIR}/src/data/RealTimeData.cpp"
-    "${PROJECT_SOURCE_DIR}/src/data/HistoricalDataFetcher.cpp"
+    "${PROJECT_SOURCE_DIR}/src/data/DailyDataFetcher.cpp"
     "${PROJECT_SOURCE_DIR}/src/main.cpp"
 )
 
