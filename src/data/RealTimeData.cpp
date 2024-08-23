@@ -21,6 +21,8 @@
 
 #include <numeric>
 #include <cmath>
+#include <thread>
+#include <chrono>
 #include "RealTimeData.h"
 
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
@@ -39,6 +41,7 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
     }
 
     connected = false;
+    previousVolume = 0
 
     try {
         connectToIB();
@@ -60,25 +63,22 @@ RealTimeData::~RealTimeData() {
 bool RealTimeData::connectToIB() {
     std::lock_guard<std::mutex> lock(clientMutex);
 
-    STX_LOGI(logger, "Creating EClientSocket.");
-
     try {
         client = std::make_unique<EClientSocket>(this, osSignal.get());
         if (!client) {
             throw std::runtime_error("Failed to create EClientSocket");
         }
-        STX_LOGI(logger, "EClientSocket created, attempting to connect.");
-        
+
         const char *host = "127.0.0.1";
         int port = 7496;
         int clientId = 0;
 
         if (client->eConnect(host, port, clientId)) {
-            STX_LOGI(logger, "Connected to IB TWS");
+            if (!reader) {
+                reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            }
 
-            reader = std::make_unique<EReader>(client.get(), osSignal.get());
             reader->start();
-
             readerThread = std::thread([this]() {
                 while (client->isConnected()) {
                     osSignal->waitForSignal();
@@ -87,21 +87,17 @@ bool RealTimeData::connectToIB() {
                 }
             });
 
-            connected = true;  // 更新连接状态
-            return true;  // 连接成功
+            connected = true;
+            return true;
         } else {
             STX_LOGE(logger, "Failed to connect to IB TWS.");
-            stop();  // 确保连接失败后清理资源
-            return false;  // 连接失败
+            stop();
+            return false;
         }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
         stop();
-        return false;  // 连接失败
-    } catch (...) {
-        STX_LOGE(logger, "Unknown error occurred during connectToIB");
-        stop();
-        return false;  // 连接失败
+        return false;
     }
 }
 
@@ -116,37 +112,19 @@ void RealTimeData::start() {
         region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
         STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
 
-        std::time_t lastMinute = std::time(nullptr) / 60;
-
-        // 数据请求线程
-        std::thread requestDataThread([&]() {
-            auto nextRequestTime = std::chrono::steady_clock::now();
-            while (running) {
-                if (isMarketOpen()) {
-                    requestDataWithRetry();
-
-                    // 调整下一次请求的时间，以保证每秒请求一次
-                    nextRequestTime += std::chrono::seconds(1);
-                    std::this_thread::sleep_until(nextRequestTime);
-                } else {
-                    std::this_thread::sleep_for(std::chrono::minutes(1));
-                }
-            }
-        });
-
-        // 数据处理线程
+        requestData();
+        
         std::thread processDataThread([&]() {
             while (running) {
-                std::time_t currentMinute = std::time(nullptr) / 60;
-                if (currentMinute != lastMinute) {
-                    aggregateMinuteData();
-                    lastMinute = currentMinute;
-                }
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+                auto now = std::chrono::system_clock::now();
+                auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
+
+                std::this_thread::sleep_until(nextMinute);
+
+                aggregateMinuteData();
             }
         });
 
-        requestDataThread.join();
         processDataThread.join();
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Exception in start: " + std::string(e.what()));
@@ -160,10 +138,8 @@ void RealTimeData::stop() {
 
     running = false;
 
-    // 清理共享内存
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
-    // 确保客户端正确断开连接
     if (client && client->isConnected()) {
         client->eDisconnect();
         STX_LOGI(logger, "Disconnected from IB TWS");
@@ -178,80 +154,22 @@ void RealTimeData::stop() {
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
-void RealTimeData::requestDataWithRetry() {
-    if (!client->isConnected()) {
-        STX_LOGW(logger, "Client is not connected. Attempting to reconnect...");
-        connected = false; // 强制更新连接状态为断开
-
-        try {
-            connectToIB();  // 重新连接
-        } catch (const std::exception &e) {
-            STX_LOGE(logger, "Failed to reconnect: " + std::string(e.what()));
-            return;
-        }
-    }
-    
-    try {
-        requestData();
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Data request failed after reconnect: " + std::string(e.what()));
-    }
-}
-
-bool RealTimeData::isMarketOpen() {
-    std::time_t nyTime = getNYTime();
-    std::tm *tm = std::localtime(&nyTime);
-
-    char buf[100];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", tm);
-
-    // Market open from 9:30 to 16:00
-    bool open = (tm->tm_hour > 9 && tm->tm_hour < 16) || (tm->tm_hour == 9 && tm->tm_min >= 30);
-
-    // Check if it's a weekend
-    bool weekend = (tm->tm_wday == 0 || tm->tm_wday == 6);
-
-    if (open && !weekend) {
-        // STX_LOGI(logger, "Current New York Time: " + std::string(buf) + " - Market is open.");
-        return true;
-    } else {
-        // STX_LOGW(logger, "Current New York Time: " + std::string(buf) + " - Market is closed.");
-        return false;
-    }
-}
-
-std::time_t RealTimeData::getNYTime() {
-    std::time_t t = std::time(nullptr);
-    std::tm *utc_tm = std::gmtime(&t);
-
-    // 考虑夏令时，手动计算 EST/EDT 时间
-    utc_tm->tm_hour -= 5;
-    std::time_t localTime = std::mktime(utc_tm);
-
-    std::tm *ny_tm = std::localtime(&localTime);
-    if (ny_tm->tm_isdst > 0) {
-        ny_tm->tm_hour += 1;
-    }
-
-    return std::mktime(ny_tm);
-}
-
 void RealTimeData::requestData() {
     Contract contract;
     contract.symbol = "SPY";
     contract.secType = "STK";
     contract.exchange = "SMART";
-    contract.primaryExchange = "NYSE";  // 指定主交易所
+    contract.primaryExchange = "NYSE";
     contract.currency = "USD";
 
     int l1RequestId = ++requestId;
     int l2RequestId = ++requestId;
 
-    STX_LOGI(logger, "Requesting L1 data with request ID: " + std::to_string(l1RequestId));
-    client->reqMktData(l1RequestId, contract, "TRADES", false, false, TagValueListSPtr());
-
-    STX_LOGI(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
+    client->reqMktData(l1RequestId, contract, "", false, false, TagValueListSPtr());
     client->reqMktDepth(l2RequestId, contract, 10, true, TagValueListSPtr());
+    
+    STX_LOGI(logger, "Requested L1 data with request ID: " + std::to_string(l1RequestId));
+    STX_LOGI(logger, "Requested L2 data with request ID: " + std::to_string(l2RequestId));
 }
 
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
@@ -260,8 +178,6 @@ void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, co
     if (field == LAST) {
         l1Prices.push_back(price);
         STX_LOGI(logger, "Received tick price: Ticker " + std::to_string(tickerId) + ", Price " + std::to_string(price));
-    } else {
-        STX_LOGW(logger, "Unhandled tick price field: " + std::to_string(field) + " for ticker " + std::to_string(tickerId));
     }
 }
 
@@ -271,8 +187,6 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
     if (field == LAST_SIZE) {
         l1Volumes.push_back(size);
         STX_LOGI(logger, "Received tick size: Ticker " + std::to_string(tickerId) + ", Size " + std::to_string(size));
-    } else {
-        STX_LOGW(logger, "Unhandled tick size field: " + std::to_string(field) + " for ticker " + std::to_string(tickerId));
     }
 }
 
@@ -293,14 +207,10 @@ void RealTimeData::processL2Data(int position, double price, Decimal size, int s
     std::map<std::string, double> data;
     data["Position"] = position;
 
-    if (side == 1) {  // Bid side
+    if (side == 1) {
         data["BidPrice"] = price;
         data["BidSize"] = size;
-        data["AskPrice"] = 0.0;
-        data["AskSize"] = 0.0;
-    } else {  // Ask side
-        data["BidPrice"] = 0.0;
-        data["BidSize"] = 0.0;
+    } else {
         data["AskPrice"] = price;
         data["AskSize"] = size;
     }
@@ -311,7 +221,7 @@ void RealTimeData::processL2Data(int position, double price, Decimal size, int s
 void RealTimeData::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
     STX_LOGE(logger, "Error: ID " + std::to_string(id) + " Code " + std::to_string(errorCode) + " Message: " + errorString);
 
-    if (errorCode == 509 || errorCode == 1100 || errorCode == 1101) {  // Connection reset or lost
+    if (errorCode == 509 || errorCode == 1100 || errorCode == 1101) {
         STX_LOGW(logger, "Attempting to reconnect due to error code: " + std::to_string(errorCode));
         reconnect();
     }
@@ -330,18 +240,14 @@ void RealTimeData::reconnect() {
     }
 }
 
-void RealTimeData::nextValidId(OrderId orderId) { // for order, not data request 
+void RealTimeData::nextValidId(OrderId orderId) {
     nextOrderId = orderId;
     STX_LOGI(logger, "Next valid order ID: " + std::to_string(orderId));
 }
 
 void RealTimeData::aggregateMinuteData() {
-    if (l1Prices.empty()) {
-        STX_LOGW(logger, "L1 data is empty.");
-        return;
-    }
-    if (l2Data.empty()) {
-        STX_LOGW(logger, "L2 data is empty.");
+    if (l1Prices.empty() || l2Data.empty()) {
+        STX_LOGE(logger, "Empty data. ");
         return;
     }
 
@@ -351,20 +257,16 @@ void RealTimeData::aggregateMinuteData() {
     double close = l1Prices.back();
     double high = *std::max_element(l1Prices.begin(), l1Prices.end());
     double low = *std::min_element(l1Prices.begin(), l1Prices.end());
-    double volume = std::accumulate(l1Volumes.begin(), l1Volumes.end(), 0.0);
+    double volume = l1Volumes.back() - previousVolume;
+    previousVolume = l1Volumes.back();
 
-    double bidAskSpread = 0.0, midpoint = 0.0, priceChange = 0.0;
+    double bidAskSpread = l2Data.back().at("AskPrice") - l2Data.front().at("BidPrice");
+    double midpoint = (l2Data.front().at("BidPrice") + l2Data.back().at("AskPrice")) / 2.0;
+
     double totalL2Volume = 0.0;
-
     for (const auto &data : l2Data) {
         totalL2Volume += data.at("BidSize") + data.at("AskSize");
     }
-
-    bidAskSpread = l2Data.back().at("AskPrice") - l2Data.front().at("BidPrice");
-    midpoint = (l2Data.front().at("BidPrice") + l2Data.back().at("AskPrice")) / 2.0;
-
-    double gap = open - yesterdayClose;
-    yesterdayClose = close;
 
     double rsi = calculateRSI();
     double macd = calculateMACD();
@@ -376,17 +278,8 @@ void RealTimeData::aggregateMinuteData() {
     oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
-    // Write combined data to shared memory
-    std::stringstream combinedData;
-    combinedData << datetime << "," << open << "," << high << "," << low << "," << close << "," << volume << ","
-                 << bidAskSpread << "," << midpoint << "," << priceChange << "," << totalL2Volume << "," << gap << ","
-                 << rsi << "," << macd << "," << vwap << "\n";
-
-    // Write to shared memory
-    writeToSharedMemory(combinedData.str());
-
-    // Insert into TimescaleDB with the formatted datetime string
-    if (timescaleDB->insertL1Data(datetime, {{"Bid", l1Prices.front()}, {"Ask", l1Prices.back()}, {"Last", close}, {"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}})) {
+    // Insert into TimescaleDB
+    if (timescaleDB->insertL1Data(datetime, {{"Open", open}, {"High", high}, {"Low", low}, {"Close", close}, {"Volume", volume}})) {
         STX_LOGI(logger, "L1 data written to db successfully: " + datetime);
     } else {
         STX_LOGE(logger, "L1 data write to db failed: " + datetime);
@@ -396,13 +289,13 @@ void RealTimeData::aggregateMinuteData() {
     } else {
         STX_LOGE(logger, "L2 data write to db failed: " + datetime);
     }
-    if (timescaleDB->insertFeatureData(datetime, {{"Gap", gap}, {"TodayOpen", open}, {"TotalL2Volume", totalL2Volume}, {"RSI", rsi}, {"MACD", macd}, {"VWAP", vwap}})) {
-        STX_LOGI(logger, "Feature data written to db successfully: " + datetime);
-    } else {
-        STX_LOGE(logger, "Feature data write to db failed: " + datetime);
-    }
 
-    // Clear temporary data
+    // Write combined data to shared memory
+    std::stringstream combinedData;
+    combinedData << datetime << "," << open << "," << high << "," << low << "," << close << "," << volume << ","
+                 << bidAskSpread << "," << midpoint << "," << totalL2Volume << "," << rsi << "," << macd << "," << vwap << "\n";
+    writeToSharedMemory(combinedData.str());
+
     l1Prices.clear();
     l1Volumes.clear();
     l2Data.clear();

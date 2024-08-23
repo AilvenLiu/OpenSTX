@@ -88,6 +88,7 @@ private:
     std::mutex dataMutex;
     std::mutex clientMutex;
     bool connected;
+    double previousVolume;
 
 private:
     inline const bool isConnected() {return connected;}

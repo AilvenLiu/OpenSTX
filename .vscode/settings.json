@@ -60,6 +60,7 @@
         "source_location": "cpp",
         "span": "cpp",
         "csignal": "cpp",
-        "condition_variable": "cpp"
+        "condition_variable": "cpp",
+        "chrono": "cpp"
     }
 }
