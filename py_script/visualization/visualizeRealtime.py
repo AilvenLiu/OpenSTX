@@ -3,7 +3,7 @@ import matplotlib.dates as mdates
 import pandas as pd
 import numpy as np
 from matplotlib.animation import FuncAnimation
-from data.readSharedMemory import read_shared_memory
+from py_script.readSharedMemory import read_shared_memory
 import datetime
 
 # Initialize the figure and subplots

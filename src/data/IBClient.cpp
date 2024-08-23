@@ -22,10 +22,12 @@
 #include "IBClient.h"
 #include <sstream>
 #include <iomanip>
+#include <thread>
 
 IBClient::IBClient(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db)
     : osSignal(std::make_unique<EReaderOSSignal>(2000)),
       client(std::make_unique<EClientSocket>(this, osSignal.get())),
+      reader(std::make_unique<EReader>(client.get(), osSignal.get())),
       logger(log), db(_db), dataReceived(false), nextRequestId(0), connected(false) {}
 
 IBClient::~IBClient() {
@@ -42,13 +44,29 @@ bool IBClient::connect(const std::string& host, int port, int clientId) {
         if (client->eConnect(host.c_str(), port, clientId)) {
             connected = true;
             STX_LOGI(logger, "Connected to IB TWS with clientId: " + std::to_string(clientId));
+
+            // 启动 EReader 线程以处理服务器消息
+            if (!reader) {
+                reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            }
+            reader->start();
+            std::thread([this]() {
+                while (client->isConnected()) {
+                    osSignal->waitForSignal();
+                    std::lock_guard<std::mutex> lock(mtx);
+                    reader->processMsgs();
+                }
+            }).detach();
+
             return true;
         } else {
             STX_LOGE(logger, "Failed to connect to IB TWS with clientId: " + std::to_string(clientId));
+            connected = false; // 确保连接失败时状态正确
             return false;
         }
     } catch (const std::exception& e) {
         STX_LOGE(logger, "Exception during connect: " + std::string(e.what()));
+        connected = false; // 确保异常时状态正确
         return false;
     }
 }
@@ -65,13 +83,13 @@ void IBClient::disconnect() {
     }
 }
 
-void IBClient::requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental) {
+void IBClient::requestDailyData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental) {
     historicalDataBuffer.clear();
     STX_LOGI(logger, "Requesting historical data for " + symbol);
 
     std::string endDateTime = "";
     if (incremental) {
-        endDateTime = db->getLastHistoricalEndDate(symbol);
+        endDateTime = db->getLastDailyEndDate(symbol);
     }
 
     Contract contract;
@@ -90,33 +108,8 @@ void IBClient::requestHistoricalData(const std::string& symbol, const std::strin
     STX_LOGI(logger, "Completed historical data request for " + symbol);
 }
 
-std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::getHistoricalData() {
+std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::getDailyData() {
     return historicalDataBuffer;
-}
-
-void IBClient::requestOptionsData(const std::string& symbol) {
-    optionsDataBuffer.clear();
-    optionExpiryDates.clear();
-    STX_LOGI(logger, "Requesting options data for " + symbol);
-
-    auto expiryDates = getNextThreeExpiryDates(symbol);
-    for (const auto& expiryDate : expiryDates) {
-        Contract contract;
-        contract.symbol = symbol;
-        contract.secType = "OPT";
-        contract.exchange = "SMART";
-        contract.currency = "USD";
-        contract.lastTradeDateOrContractMonth = expiryDate;
-
-        client->reqContractDetails(nextRequestId++, contract);
-    }
-
-    waitForData();
-    STX_LOGI(logger, "Completed options data request for " + symbol);
-}
-
-std::vector<std::map<std::string, std::variant<double, std::string>>> IBClient::getOptionsData() {
-    return optionsDataBuffer;
 }
 
 void IBClient::historicalData(TickerId reqId, const Bar& bar) {
@@ -141,28 +134,19 @@ void IBClient::historicalDataEnd(int reqId, const std::string& startDateStr, con
     cv.notify_one();
 }
 
-void IBClient::contractDetails(int reqId, const ContractDetails& details) {
-    std::string expiryDate = details.contract.lastTradeDateOrContractMonth;
-    optionExpiryDates.push_back(expiryDate);
-
-    if (optionExpiryDates.size() >= 3) {
-        dataReceived = true;
-        cv.notify_one();
-    }
-}
-
-void IBClient::contractDetailsEnd(int reqId) {
-    std::unique_lock<std::mutex> lock(mtx);
-    dataReceived = true;
-    cv.notify_one();
-    STX_LOGI(logger, "Completed receiving contract details for request ID: " + std::to_string(reqId));
-}
-
 void IBClient::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
     STX_LOGE(logger, "Error: " + std::to_string(id) + " - " + std::to_string(errorCode) + " - " + errorString);
-    std::unique_lock<std::mutex> lock(mtx);
-    dataReceived = true;  // 解锁等待
-    cv.notify_one();
+
+    if (errorCode == 509 || errorCode == 1100) {  // 处理特定错误码，例如连接断开或重置
+        std::lock_guard<std::mutex> lock(mtx);
+        connected = false;  // 确保在发生错误时正确更新连接状态
+        dataReceived = true;  // 解锁等待中的线程
+        cv.notify_one();
+    } else {
+        std::unique_lock<std::mutex> lock(mtx);
+        dataReceived = true;  // 对其他错误解锁等待
+        cv.notify_one();
+    }
 }
 
 void IBClient::nextValidId(OrderId orderId) {
@@ -173,21 +157,6 @@ void IBClient::waitForData() {
     std::unique_lock<std::mutex> lock(mtx);
     cv.wait(lock, [this] { return dataReceived; });
     dataReceived = false;
-}
-
-std::vector<std::string> IBClient::getNextThreeExpiryDates(const std::string& symbol) {
-    optionExpiryDates.clear();
-
-    Contract contract;
-    contract.symbol = symbol;
-    contract.secType = "OPT";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
-
-    client->reqContractDetails(nextRequestId++, contract);
-    waitForData();
-
-    return optionExpiryDates;
 }
 
 void IBClient::parseDateString(const std::string& dateStr, std::tm& timeStruct) {

@@ -78,31 +78,22 @@ private:
     double yesterdayClose;
     bool running;
     std::thread readerThread;  // 保存线程句柄
-
-    std::ofstream l1DataFile;
-    std::ofstream l2DataFile;    
-    std::ofstream combinedDataFile;
-
-    std::string l1FilePath;
-    std::string l2FilePath;
-    std::string combinedFilePath;
     
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
     std::vector<std::map<std::string, double>> l2Data;
 
-    std::vector<double> l2BidPrices;
-    std::vector<Decimal> l2BidSizes;
-    std::vector<double> l2AskPrices;
-    std::vector<Decimal> l2AskSizes;
-
     boost::interprocess::shared_memory_object shm;
     boost::interprocess::mapped_region region;
     std::mutex dataMutex;
     std::mutex clientMutex;
+    bool connected;
 
 private:
-    void connectToIB();
+    inline const bool isConnected() {return connected;}
+
+    bool connectToIB();
+    void reconnect();
     void requestData();
     std::time_t getNYTime();
     void aggregateMinuteData();
@@ -123,7 +114,7 @@ private:
     void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
 
-    // Unused EWrapper methods, implement to avoid a pure virtual class (but may be used later below)
+    // Unused EWrapper methods, implement to avoid a pure virtual class
     void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
 
 private:

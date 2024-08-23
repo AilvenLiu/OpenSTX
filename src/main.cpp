@@ -32,7 +32,7 @@
 #include "Logger.h"
 #include "Config.h"
 
-bool running = true;
+std::atomic<bool> running(true);
 
 void signalHandler(int signum) {
     std::cout << "\nInterrupt signal (" << signum << ") received.\n";
@@ -105,7 +105,7 @@ int main() {
         }
     });
 
-    // Periodically fetch historical and options data (e.g., daily)
+    // Periodically fetch historical data (e.g., daily)
     std::thread historicalDataThread([&]() {
         std::this_thread::sleep_for(std::chrono::seconds(30)); // Wait for RealTimeData connection to stabilize
 
@@ -113,9 +113,7 @@ int main() {
             try {
                 if (!dataCollector->isMarketOpen()) {
                     // Request historical data incrementally, one day at a time.
-                    historicalDataFetcher->fetchHistoricalData("SPY", "1 D", "1 day", true);
-                    // Fetch options data as required (adjust frequency as needed).
-                    historicalDataFetcher->fetchOptionsData("SPY");
+                    historicalDataFetcher->fetchAndProcessDailyData("SPY", "3 Y", true);
                 } else {
                     STX_LOGI(logger, "Market is open. Waiting for an hour before checking again.");
                     std::this_thread::sleep_for(std::chrono::hours(1)); // Wait 1 hour if the market is open

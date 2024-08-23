@@ -25,9 +25,9 @@
 #include <pqxx/pqxx>
 #include <string>
 #include <map>
-#include <variant>
 #include <vector>
 #include <memory>
+#include <variant>
 #include "Logger.h"
 
 class TimescaleDB {
@@ -38,31 +38,25 @@ public:
     bool insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data);
     bool insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data);
     bool insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features);
+    bool insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
 
-    bool insertHistoricalData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
-    bool insertOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &optionsData);
-    bool insertDailyOptionsData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyOptionsData);
-
-    // 获取最新的历史数据日期
-    const std::string getLastHistoricalEndDate(const std::string &symbol);
+    const std::string getLastDailyEndDate(const std::string &symbol);
 
 private:
+    void connectToDatabase();
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
     void enableTimescaleExtension();
     void reconnect(int max_attempts, int delay_seconds);
     void createTables();
     void cleanupAndExit();
-    
+
     std::shared_ptr<Logger> logger;
-    pqxx::connection *conn;
+    std::unique_ptr<pqxx::connection> conn;
     std::string dbname;
     std::string user;
     std::string password;
     std::string host;
     std::string port;
-
-    // for unit test
-    friend class TimescaleDBAccessor;
 };
 
 #endif // TIMESCALEDB_H

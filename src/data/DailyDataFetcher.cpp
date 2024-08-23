@@ -39,7 +39,7 @@ void DailyDataFetcher::stop() {
     STX_LOGW(logger, "Resources released.");
 }
 
-void DailyDataFetcher::fetchAndProcessHistoricalData(const std::string& symbol, const std::string& duration, bool incremental) {
+void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
     STX_LOGI(logger, "Fetching and processing historical data for symbol: " + symbol);
 
     if (!ibClient->isConnected()) {
@@ -54,7 +54,7 @@ void DailyDataFetcher::fetchAndProcessHistoricalData(const std::string& symbol, 
     std::string startDateTime;
 
     if (incremental) {
-        startDateTime = db->getLastHistoricalEndDate(symbol);
+        startDateTime = db->getLastDailyEndDate(symbol);
         if (startDateTime.empty()) {
             startDateTime = calculateStartDateFromDuration(duration);
         }
@@ -65,21 +65,20 @@ void DailyDataFetcher::fetchAndProcessHistoricalData(const std::string& symbol, 
     auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
     for (const auto& range : dateRanges) {
-        ibClient->requestHistoricalData(symbol, range.first, "1 day", incremental);
-        auto historicalData = ibClient->getHistoricalData();
+        ibClient->requestDailyData(symbol, range.first, "1 day", incremental);
+        auto historicalData = ibClient->getDailyData();
 
         for (const auto& data : historicalData) {
-            storeHistoricalData(symbol, data);
-            calculateAndStoreOptionsData(std::get<std::string>(data.at("date")), data);
+            storeDailyData(symbol, data);
         }
     }
 
     STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + symbol);
 }
 
-void DailyDataFetcher::storeHistoricalData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
     std::string date = std::get<std::string>(historicalData.at("date"));
-    if (db->insertHistoricalData(date, {
+    if (db->insertDailyData(date, {
             {"symbol", symbol},
             {"open", std::get<double>(historicalData.at("open"))},
             {"high", std::get<double>(historicalData.at("high"))},
@@ -87,42 +86,9 @@ void DailyDataFetcher::storeHistoricalData(const std::string& symbol, const std:
             {"close", std::get<double>(historicalData.at("close"))},
             {"volume", std::get<double>(historicalData.at("volume"))}})
     ) {
-        STX_LOGI(logger, "Historical data written to db successfully: " + symbol + " " + date);
+        STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
     } else {
         STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
-    }
-}
-
-void DailyDataFetcher::calculateAndStoreOptionsData(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
-    STX_LOGI(logger, "Calculating and storing options data for date: " + date);
-
-    // 获取股票价格和其他相关数据
-    double spotPrice = std::get<double>(historicalData.at("close"));
-    double strikePrice = spotPrice * 1.05;  // 计算期权时需要使用的行权价
-    double timeToExpiration = 30.0 / 365.0; // 假设期权到期时间为30天
-    double riskFreeRate = 0.01; // 无风险利率
-
-    // 计算隐含波动率、Delta、Gamma、Theta、Vega
-    double impliedVolatility = calculateImpliedVolatility(historicalData);
-    double delta = calculateDelta(spotPrice, strikePrice, timeToExpiration, riskFreeRate, impliedVolatility);
-    double gamma = calculateGamma(delta, spotPrice, impliedVolatility, timeToExpiration);
-    double theta = calculateTheta(spotPrice, strikePrice, timeToExpiration, riskFreeRate, impliedVolatility);
-    double vega = calculateVega(spotPrice, timeToExpiration, impliedVolatility);
-
-    // 插入计算出的期权数据到数据库
-    std::map<std::string, std::variant<double, std::string>> optionsData = {
-        {"symbol", "SPY"},
-        {"implied_volatility", impliedVolatility},
-        {"delta", delta},
-        {"gamma", gamma},
-        {"theta", theta},
-        {"vega", vega}
-    };
-
-    if (db->insertDailyOptionsData(date, optionsData)) {
-        STX_LOGI(logger, "Options data calculated and stored successfully for date: " + date);
-    } else {
-        STX_LOGE(logger, "Failed to store options data for date: " + date);
     }
 }
 
@@ -186,39 +152,4 @@ std::string DailyDataFetcher::getCurrentDate() {
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
-}
-
-// 计算期权的隐含波动率
-double DailyDataFetcher::calculateImpliedVolatility(const std::map<std::string, std::variant<double, std::string>>& historicalData) {
-    double closePrice = std::get<double>(historicalData.at("close"));
-    double highPrice = std::get<double>(historicalData.at("high"));
-    double lowPrice = std::get<double>(historicalData.at("low"));
-
-    return (highPrice - lowPrice) / closePrice;
-}
-
-// 计算期权的 Delta
-double DailyDataFetcher::calculateDelta(double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility) {
-    double d1 = (std::log(spotPrice / strikePrice) + (riskFreeRate + 0.5 * std::pow(volatility, 2)) * timeToExpiration) / (volatility * std::sqrt(timeToExpiration));
-    return std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d1, 2)) / (volatility * spotPrice * std::sqrt(2 * M_PI * timeToExpiration));
-}
-
-// 计算期权的 Gamma
-double DailyDataFetcher::calculateGamma(double delta, double spotPrice, double volatility, double timeToExpiration) {
-    return delta
-
- / (spotPrice * volatility * std::sqrt(timeToExpiration));
-}
-
-// 计算期权的 Theta
-double DailyDataFetcher::calculateTheta(double spotPrice, double strikePrice, double timeToExpiration, double riskFreeRate, double volatility) {
-    double d1 = (std::log(spotPrice / strikePrice) + (riskFreeRate + 0.5 * std::pow(volatility, 2)) * timeToExpiration) / (volatility * std::sqrt(timeToExpiration));
-    double d2 = d1 - volatility * std::sqrt(timeToExpiration);
-    return -spotPrice * std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d1, 2)) * volatility / (2 * std::sqrt(2 * M_PI * timeToExpiration)) -
-           riskFreeRate * strikePrice * std::exp(-riskFreeRate * timeToExpiration) * std::exp(-0.5 * std::pow(d2, 2)) / (volatility * std::sqrt(2 * M_PI * timeToExpiration));
-}
-
-// 计算期权的 Vega
-double DailyDataFetcher::calculateVega(double spotPrice, double timeToExpiration, double volatility) {
-    return spotPrice * std::sqrt(timeToExpiration) * std::exp(-0.5 * std::pow(volatility, 2)) / std::sqrt(2 * M_PI);
 }

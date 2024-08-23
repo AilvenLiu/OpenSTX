@@ -34,6 +34,7 @@
 #include "EClientSocket.h"
 #include "Contract.h"
 #include "Bar.h"
+#include "EReader.h"
 #include "Logger.h"
 #include "TimescaleDB.h"
 
@@ -51,23 +52,19 @@ public:
     }
 
     // Data Requests
-    void requestHistoricalData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
-    std::vector<std::map<std::string, std::variant<double, std::string>>> getHistoricalData();
-
-    void requestOptionsData(const std::string& symbol);
-    std::vector<std::map<std::string, std::variant<double, std::string>>> getOptionsData();
+    void requestDailyData(const std::string& symbol, const std::string& duration, const std::string& barSize, bool incremental);
+    std::vector<std::map<std::string, std::variant<double, std::string>>> getDailyData();
 
     // EWrapper overrides
     void historicalData(TickerId reqId, const Bar& bar) override;
     void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
-    void contractDetails(int reqId, const ContractDetails &contractDetails) override;
-    void contractDetailsEnd(int reqId) override;
     void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
 
 private:
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
+    std::unique_ptr<EReader> reader;
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> db;
     std::mutex mtx;
@@ -75,15 +72,22 @@ private:
     bool dataReceived;
 
     std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
-    std::vector<std::map<std::string, std::variant<double, std::string>>> optionsDataBuffer;
-    std::vector<std::string> optionExpiryDates;
 
     int nextRequestId;
     bool connected;
 
     void waitForData();
-    std::vector<std::string> getNextThreeExpiryDates(const std::string& symbol);
     void parseDateString(const std::string& dateStr, std::tm& timeStruct);
+
+private:
+    // used to ues, but is removed int the current version.
+    // std::vector<std::map<std::string, std::variant<double, std::string>>> optionsDataBuffer;
+    // std::vector<std::string> optionExpiryDates;
+    // std::vector<std::string> getNextThreeExpiryDates(const std::string& symbol) {};
+    // void requestOptionsData(const std::string& symbol) {};
+    // std::vector<std::map<std::string, std::variant<double, std::string>>> getOptionsData() {};
+    void contractDetails(int reqId, const ContractDetails &contractDetails) override {};
+    void contractDetailsEnd(int reqId) override {};
     
 private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
