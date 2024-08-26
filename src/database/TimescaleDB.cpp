@@ -20,7 +20,7 @@
  *************************************************************************/
 
 #include <thread>
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include "TimescaleDB.h"
 
 using json = nlohmann::json;
@@ -135,7 +135,13 @@ void TimescaleDB::createTables() {
                 low DOUBLE PRECISION,
                 close DOUBLE PRECISION,
                 volume DOUBLE PRECISION,
-                adj_close DOUBLE PRECISION
+                adj_close DOUBLE PRECISION,
+                sma DOUBLE PRECISION,
+                ema DOUBLE PRECISION,
+                rsi DOUBLE PRECISION,
+                macd DOUBLE PRECISION,
+                vwap DOUBLE PRECISION,
+                momentum DOUBLE PRECISION
             );
         )");
 
@@ -178,19 +184,27 @@ bool TimescaleDB::insertRealTimeData(const std::string &datetime, const json &l1
     }
 }
 
-bool TimescaleDB::insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData) {
+bool TimescaleDB::insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData) {
     STX_LOGI(logger, "Inserting daily data for date " + date);
     try {
         pqxx::work txn(*conn);
-        std::string query = "INSERT INTO daily_data (date, symbol, open, high, low, close, volume, adj_close) VALUES (" +
+
+        std::string query = "INSERT INTO daily_data (date, symbol, open, high, low, close, volume, adj_close, sma, ema, rsi, macd, vwap, momentum) VALUES (" +
                             txn.quote(date) + ", " +
-                            txn.quote(std::get<std::string>(historicalData.at("symbol"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("open"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("high"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("low"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("close"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("volume"))) + ", " +
-                            txn.quote(std::get<double>(historicalData.at("adj_close"))) + ");";
+                            txn.quote(std::get<std::string>(dailyData.at("symbol"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("open"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("high"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("low"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("close"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("volume"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("adj_close"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("sma"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("ema"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("rsi"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("macd"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("vwap"))) + ", " +
+                            txn.quote(std::get<double>(dailyData.at("momentum"))) + ");";
+
         txn.exec(query);
         txn.commit();
         return true;

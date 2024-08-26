@@ -28,17 +28,18 @@
 #include <vector>
 #include <memory>
 #include <variant>
+#include "nlohmann/json.hpp"
 #include "Logger.h"
+
+using json = nlohmann::json;
 
 class TimescaleDB {
 public:
     TimescaleDB(const std::shared_ptr<Logger>& logger, const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
     ~TimescaleDB();
 
-    bool insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data);
-    bool insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data);
-    bool insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features);
-    bool insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &historicalData);
+    bool insertRealTimeData(const std::string &datetime, const json &l1Data, const json &l2Data, const json &featureData);
+    bool insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData);
 
     const std::string getLastDailyEndDate(const std::string &symbol);
 

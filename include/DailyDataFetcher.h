@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <deque>
 #include "IBClient.h"
 #include "TimescaleDB.h"
 #include "Logger.h"
@@ -47,6 +48,15 @@ private:
     std::string getCurrentDate();
     void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
 
+    // 新增的技术指标计算函数声明
+    double calculateSMA(const std::string& symbol, double close);
+    double calculateEMA(const std::string& symbol, double close);
+    double calculateRSI(const std::string& symbol, double close);
+    double calculateMACD(const std::string& symbol, double close);
+    double calculateVWAP(const std::string& symbol, double volume, double close);
+    double calculateMomentum(const std::string& symbol, double close);
+
+    // 成员变量
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<IBClient> ibClient;

@@ -23,7 +23,7 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include "RealTimeData.h"
 
 using json = nlohmann::json;

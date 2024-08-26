@@ -39,7 +39,7 @@
 #include <numeric>
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
-#include <nlohmann/json.hpp>
+#include "nlohmann/json.hpp"
 #include "EClientSocket.h"
 #include "EWrapper.h"
 #include "Logger.h"
@@ -69,7 +69,7 @@ public:
 private:
     struct L2DataPoint {
         double price;
-        double volume;
+        Decimal volume;
         std::string side; // "Buy" or "Sell"
     };
 
@@ -86,6 +86,7 @@ private:
     double previousVolume;
 
     std::thread readerThread;
+    std::thread processDataThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
