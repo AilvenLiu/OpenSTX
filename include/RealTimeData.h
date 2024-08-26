@@ -39,6 +39,7 @@
 #include <numeric>
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
+#include <nlohmann/json.hpp>
 #include "EClientSocket.h"
 #include "EWrapper.h"
 #include "Logger.h"
@@ -64,9 +65,14 @@ public:
 
     void start();
     void stop();
-    bool isMarketOpen();
 
 private:
+    struct L2DataPoint {
+        double price;
+        double volume;
+        std::string side; // "Buy" or "Sell"
+    };
+
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
     std::unique_ptr<EReader> reader;
@@ -77,38 +83,40 @@ private:
     int requestId;
     double yesterdayClose;
     bool running;
-    std::thread readerThread;  // 保存线程句柄
-    
+    double previousVolume;
+
+    std::thread readerThread;
+
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
-    std::vector<std::map<std::string, double>> l2Data;
+    std::vector<L2DataPoint> rawL2Data; // 存储原始的L2数据
 
     boost::interprocess::shared_memory_object shm;
     boost::interprocess::mapped_region region;
     std::mutex dataMutex;
     std::mutex clientMutex;
     bool connected;
-    double previousVolume;
-
-private:
-    inline const bool isConnected() {return connected;}
 
     bool connectToIB();
     void reconnect();
     void requestData();
-    std::time_t getNYTime();
     void aggregateMinuteData();
-    void requestDataWithRetry();
-
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
-    void calculateAndStoreFeatures(const std::string &datetime, double open, double high, double low, double close, double volume);
+
+    // 计算指标的方法
+    double calculateWeightedAveragePrice();
+    double calculateBuySellRatio();
+    double calculateDepthChange();
+    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
+    double calculatePriceMomentum();
+    double calculateTradeDensity();
     double calculateRSI();
     double calculateMACD();
     double calculateEMA(int period);
     double calculateVWAP();
 
-    // EWrapper interface methods
+    // EWrapper接口方法
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
     void tickSize(TickerId tickerId, TickType field, Decimal size) override;
     void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;

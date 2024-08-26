@@ -78,14 +78,36 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
 
 void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
     std::string date = std::get<std::string>(historicalData.at("date"));
+    
+    double open = std::get<double>(historicalData.at("open"));
+    double high = std::get<double>(historicalData.at("high"));
+    double low = std::get<double>(historicalData.at("low"));
+    double close = std::get<double>(historicalData.at("close"));
+    double volume = std::get<double>(historicalData.at("volume"));
+
+    // 计算特征指标
+    double sma = calculateSMA(symbol, close);
+    double ema = calculateEMA(symbol, close);
+    double rsi = calculateRSI(symbol, close);
+    double macd = calculateMACD(symbol, close);
+    double vwap = calculateVWAP(symbol, volume, close);
+    double momentum = calculateMomentum(symbol, close);
+
+    // 存储数据到数据库
     if (db->insertDailyData(date, {
             {"symbol", symbol},
-            {"open", std::get<double>(historicalData.at("open"))},
-            {"high", std::get<double>(historicalData.at("high"))},
-            {"low", std::get<double>(historicalData.at("low"))},
-            {"close", std::get<double>(historicalData.at("close"))},
-            {"volume", std::get<double>(historicalData.at("volume"))}})
-    ) {
+            {"open", open},
+            {"high", high},
+            {"low", low},
+            {"close", close},
+            {"volume", volume},
+            {"sma", sma},
+            {"ema", ema},
+            {"rsi", rsi},
+            {"macd", macd},
+            {"vwap", vwap},
+            {"momentum", momentum}
+        })) {
         STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
     } else {
         STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
@@ -152,4 +174,107 @@ std::string DailyDataFetcher::getCurrentDate() {
     std::ostringstream oss;
     oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
+}
+
+// 辅助函数：计算 SMA、EMA、RSI、MACD、VWAP、Momentum
+double DailyDataFetcher::calculateSMA(const std::string& symbol, double close) {
+    static std::map<std::string, std::vector<double>> closingPrices;
+    closingPrices[symbol].push_back(close);
+
+    const int period = 20;
+    if (closingPrices[symbol].size() < period) return 0.0;
+
+    double sum = std::accumulate(closingPrices[symbol].end() - period, closingPrices[symbol].end(), 0.0);
+    return sum / period;
+}
+
+double DailyDataFetcher::calculateEMA(const std::string& symbol, double close) {
+    static std::map<std::string, double> emaValues;
+    const int period = 20;
+    double multiplier = 2.0 / (period + 1);
+
+    if (emaValues.find(symbol) == emaValues.end()) {
+        emaValues[symbol] = close;
+    } else {
+        emaValues[symbol] = ((close - emaValues[symbol]) * multiplier) + emaValues[symbol];
+    }
+
+    return emaValues[symbol];
+}
+
+double DailyDataFetcher::calculateRSI(const std::string& symbol, double close) {
+    static std::map<std::string, std::vector<double>> gains;
+    static std::map<std::string, std::vector<double>> losses;
+
+    static double lastClose = close;
+    double change = close - lastClose;
+    lastClose = close;
+
+    if (change > 0) {
+        gains[symbol].push_back(change);
+        losses[symbol].push_back(0.0);
+    } else {
+        losses[symbol].push_back(-change);
+        gains[symbol].push_back(0.0);
+    }
+
+    const int period = 14;
+    if (gains[symbol].size() < period) return 50.0;
+
+    double avgGain = std::accumulate(gains[symbol].end() - period, gains[symbol].end(), 0.0) / period;
+    double avgLoss = std::accumulate(losses[symbol].end() - period, losses[symbol].end(), 0.0) / period;
+
+    double rs = avgGain / avgLoss;
+    return 100.0 - (100.0 / (1.0 + rs));
+}
+
+double DailyDataFetcher::calculateMACD(const std::string& symbol, double close) {
+    static std::map<std::string, double> shortEMA;
+    static std::map<std::string, double> longEMA;
+
+    const int shortPeriod = 12;
+    const int longPeriod = 26;
+    double shortMultiplier = 2.0 / (shortPeriod + 1);
+    double longMultiplier = 2.0 / (longPeriod + 1);
+
+    if (shortEMA.find(symbol) == shortEMA.end()) {
+        shortEMA[symbol] = close;
+    } else {
+        shortEMA[symbol] = ((close - shortEMA[symbol]) * shortMultiplier) + shortEMA[symbol];
+    }
+
+    if (longEMA.find(symbol) == longEMA.end()) {
+        longEMA[symbol] = close;
+    } else {
+        longEMA[symbol] = ((close - longEMA[symbol]) * longMultiplier) + longEMA[symbol];
+    }
+
+    return shortEMA[symbol] - longEMA[symbol];
+}
+
+double DailyDataFetcher::calculateVWAP(const std::string& symbol, double volume, double close) {
+    static std::map<std::string, double> cumulativePriceVolume;
+    static std::map<std::string, double> cumulativeVolume;
+
+    cumulativePriceVolume[symbol] += close * volume;
+    cumulativeVolume[symbol] += volume;
+
+    return cumulativePriceVolume[symbol] / cumulativeVolume[symbol];
+}
+
+double DailyDataFetcher::calculateMomentum(const std::string& symbol, double close) {
+    static std::map<std::string, std::deque<double>> priceHistory;
+
+    const int period = 10;
+    priceHistory[symbol].push_back(close);
+
+    if (priceHistory[symbol].size() > period) {
+        priceHistory[symbol].pop_front();
+    }
+
+    if (priceHistory[symbol].size() == period) {
+        return close - priceHistory[symbol].front();
+    } else {
+        return 0.0;
+    }
 }

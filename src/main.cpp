@@ -39,6 +39,27 @@ void signalHandler(int signum) {
     running = false;
 }
 
+bool isMarketOpenTime() {
+    std::time_t t = std::time(nullptr);
+    std::tm *utc_tm = std::gmtime(&t);
+
+    utc_tm->tm_hour -= 5;
+    std::time_t localTime = std::mktime(utc_tm);
+
+    std::tm *ny_tm = std::localtime(&localTime);
+    if (ny_tm->tm_isdst > 0) {
+        ny_tm->tm_hour += 1;
+    }
+
+    // Market open from 9:30 to 16:00 New York time
+    bool open = (ny_tm->tm_hour > 9 && ny_tm->tm_hour < 16) || (ny_tm->tm_hour == 9 && ny_tm->tm_min >= 30);
+
+    // Check if it's a weekend
+    bool weekend = (ny_tm->tm_wday == 0 || ny_tm->tm_wday == 6);
+
+    return open && !weekend;
+}
+
 int main() {
     signal(SIGINT, signalHandler);
 
@@ -95,31 +116,45 @@ int main() {
         return 1;
     }
 
-    // Start RealTimeData in a separate thread
-    std::thread dataThread([&]() {
-        try {
-            dataCollector->start();
-        } catch (const std::exception &e) {
-            STX_LOGE(logger, "Exception in RealTimeData thread: " + std::string(e.what()));
-            running = false;
+    // RealTimeData management thread
+    std::thread realTimeDataThread([&]() {
+        while (running) {
+            try {
+                // Start data collection shortly before market opens
+                while (!isMarketOpenTime()) {
+                    std::this_thread::sleep_for(std::chrono::minutes(1));
+                }
+                STX_LOGI(logger, "Market opening soon, starting RealTimeData collection.");
+                dataCollector->start();
+
+                // Stop data collection shortly after market closes
+                while (isMarketOpenTime()) {
+                    std::this_thread::sleep_for(std::chrono::minutes(1));
+                }
+                STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
+                dataCollector->stop();
+            } catch (const std::exception &e) {
+                STX_LOGE(logger, "Exception in RealTimeData management thread: " + std::string(e.what()));
+                running = false;
+            }
         }
     });
 
-    // Periodically fetch historical data (e.g., daily)
+    // Historical data fetching thread
     std::thread historicalDataThread([&]() {
-        std::this_thread::sleep_for(std::chrono::seconds(30)); // Wait for RealTimeData connection to stabilize
-
+        std::this_thread::sleep_for(std::chrono::seconds(30)); // Wait for initial RealTimeData connection to stabilize
         while (running) {
             try {
-                if (!dataCollector->isMarketOpen()) {
-                    // Request historical data incrementally, one day at a time.
+                if (!isMarketOpenTime()) {
                     historicalDataFetcher->fetchAndProcessDailyData("SPY", "3 Y", true);
+                    STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
+                    std::this_thread::sleep_for(std::chrono::hours(1));
                 } else {
-                    STX_LOGI(logger, "Market is open. Waiting for an hour before checking again.");
-                    std::this_thread::sleep_for(std::chrono::hours(1)); // Wait 1 hour if the market is open
+                    STX_LOGI(logger, "Market is open. Historical data fetch paused.");
+                    std::this_thread::sleep_for(std::chrono::hours(1));
                 }
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception in DailyDataFetcher: " + std::string(e.what()));
+                STX_LOGE(logger, "Exception in DailyDataFetcher thread: " + std::string(e.what()));
             }
         }
     });
@@ -135,7 +170,7 @@ int main() {
     historicalDataFetcher->stop();
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
-    if (dataThread.joinable()) dataThread.join();
+    if (realTimeDataThread.joinable()) realTimeDataThread.join();
     if (historicalDataThread.joinable()) historicalDataThread.join();
 
     STX_LOGI(logger, "Program terminated successfully.");

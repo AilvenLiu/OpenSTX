@@ -20,9 +20,12 @@
  *************************************************************************/
 
 #include <thread>
+#include <nlohmann/json.hpp>
 #include "TimescaleDB.h"
 
-TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &_dbname, const std::string &_user, const std::string &_password, const std::string &_host, const std::string &_port) 
+using json = nlohmann::json;
+
+TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &_dbname, const std::string &_user, const std::string &_password, const std::string &_host, const std::string &_port)
     : logger(log), conn(nullptr), dbname(_dbname), user(_user), password(_password), host(_host), port(_port) {
     try {
         connectToDatabase();
@@ -35,7 +38,7 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
 TimescaleDB::~TimescaleDB() {
     STX_LOGI(logger, "Destructor called, cleaning up resources.");
     if (conn) {
-        conn.reset(); // 使用智能指针管理连接
+        conn.reset();
         STX_LOGI(logger, "Disconnected from TimescaleDB.");
     }
 }
@@ -115,40 +118,11 @@ void TimescaleDB::createTables() {
         pqxx::work txn(*conn);
 
         txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS l1_data (
+            CREATE TABLE IF NOT EXISTS realtime_data (
                 datetime TIMESTAMPTZ PRIMARY KEY,
-                bid DOUBLE PRECISION,
-                ask DOUBLE PRECISION,
-                last DOUBLE PRECISION,
-                open DOUBLE PRECISION,
-                high DOUBLE PRECISION,
-                low DOUBLE PRECISION,
-                close DOUBLE PRECISION,
-                volume DOUBLE PRECISION
-            );
-        )");
-
-        txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS l2_data (
-                datetime TIMESTAMPTZ,
-                price_level INT,
-                bid_price DOUBLE PRECISION,
-                bid_size DOUBLE PRECISION,
-                ask_price DOUBLE PRECISION,
-                ask_size DOUBLE PRECISION,
-                PRIMARY KEY (datetime, price_level)
-            );
-        )");
-
-        txn.exec(R"(
-            CREATE TABLE IF NOT EXISTS feature_data (
-                datetime TIMESTAMPTZ PRIMARY KEY,
-                gap DOUBLE PRECISION,
-                today_open DOUBLE PRECISION,
-                total_l2_volume DOUBLE PRECISION,
-                rsi DOUBLE PRECISION,
-                macd DOUBLE PRECISION,
-                vwap DOUBLE PRECISION
+                l1_data JSONB,
+                l2_data JSONB,
+                feature_data JSONB
             );
         )");
 
@@ -182,83 +156,24 @@ void TimescaleDB::cleanupAndExit() {
     exit(EXIT_FAILURE);
 }
 
-bool TimescaleDB::insertL1Data(const std::string &datetime, const std::map<std::string, double> &l1Data) {
-    STX_LOGI(logger, "Inserting L1 data at " + datetime);
+bool TimescaleDB::insertRealTimeData(const std::string &datetime, const json &l1Data, const json &l2Data, const json &featureData) {
+    STX_LOGI(logger, "Inserting real-time data at " + datetime);
     try {
         pqxx::work txn(*conn);
 
-        std::string query = "INSERT INTO l1_data (datetime, bid, ask, last, open, high, low, close, volume) VALUES (" +
+        std::string query = "INSERT INTO realtime_data (datetime, l1_data, l2_data, feature_data) VALUES (" +
                             txn.quote(datetime) + ", " +
-                            txn.quote(l1Data.at("Bid")) + ", " +
-                            txn.quote(l1Data.at("Ask")) + ", " +
-                            txn.quote(l1Data.at("Last")) + ", " +
-                            txn.quote(l1Data.at("Open")) + ", " +
-                            txn.quote(l1Data.at("High")) + ", " +
-                            txn.quote(l1Data.at("Low")) + ", " +
-                            txn.quote(l1Data.at("Close")) + ", " +
-                            txn.quote(l1Data.at("Volume")) + ");";
+                            txn.quote(l1Data.dump()) + ", " +
+                            txn.quote(l2Data.dump()) + ", " +
+                            txn.quote(featureData.dump()) + ");";
 
         txn.exec(query);
         txn.commit();
 
-        STX_LOGI(logger, "Inserted L1 data at " + datetime);
+        STX_LOGI(logger, "Inserted real-time data at " + datetime);
         return true;
     } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error inserting L1 data into TimescaleDB: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool TimescaleDB::insertL2Data(const std::string &datetime, const std::vector<std::map<std::string, double>> &l2Data) {
-    STX_LOGI(logger, "Inserting L2 data at " + datetime);
-    try {
-        pqxx::work txn(*conn);
-
-        for (size_t i = 0; i < l2Data.size(); ++i) {
-            const auto &data = l2Data[i];
-
-            std::string query = "INSERT INTO l2_data (datetime, price_level, bid_price, bid_size, ask_price, ask_size) VALUES (" +
-                                txn.quote(datetime) + ", " +
-                                txn.quote(static_cast<int>(i)) + ", " +
-                                txn.quote(data.at("BidPrice")) + ", " +
-                                txn.quote(data.at("BidSize")) + ", " +
-                                txn.quote(data.at("AskPrice")) + ", " +
-                                txn.quote(data.at("AskSize")) + ");";
-
-            txn.exec
-
-(query);
-        }
-
-        txn.commit();
-        STX_LOGI(logger, "Inserted L2 data at " + datetime);
-        return true;
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error inserting L2 data into TimescaleDB: " + std::string(e.what()));
-        return false;
-    }
-}
-
-bool TimescaleDB::insertFeatureData(const std::string &datetime, const std::map<std::string, double> &features) {
-    STX_LOGI(logger, "Inserting feature data at " + datetime);
-    try {
-        pqxx::work txn(*conn);
-
-        std::string query = "INSERT INTO feature_data (datetime, gap, today_open, total_l2_volume, rsi, macd, vwap) VALUES (" +
-                            txn.quote(datetime) + ", " +
-                            txn.quote(features.at("Gap")) + ", " +
-                            txn.quote(features.at("TodayOpen")) + ", " +
-                            txn.quote(features.at("TotalL2Volume")) + ", " +
-                            txn.quote(features.at("RSI")) + ", " +
-                            txn.quote(features.at("MACD")) + ", " +
-                            txn.quote(features.at("VWAP")) + ");";
-
-        txn.exec(query);
-        txn.commit();
-        STX_LOGI(logger, "Inserted feature data at " + datetime);
-        return true;
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error inserting feature data into TimescaleDB: " + std::string(e.what()));
+        STX_LOGE(logger, "Error inserting real-time data into TimescaleDB: " + std::string(e.what()));
         return false;
     }
 }
