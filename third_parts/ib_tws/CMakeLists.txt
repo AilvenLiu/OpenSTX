@@ -15,6 +15,7 @@ file(GLOB API_SOURCES "${PROJECT_SOURCE_DIR}/src/*.cpp")
 
 # Specify the output directory for the dynamic library
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
+link_directories(LIBRARY_OUTPUT_PATH)
 
 # Create a shared library (dynamic library)
 add_library(ib_tws SHARED ${API_SOURCES})
@@ -32,7 +33,11 @@ if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
 endif()
 
 # Link Boost and OpenSSL libraries
-target_link_libraries(ib_tws ${Boost_LIBRARIES} ${OPENSSL_LIBRARIES})
+target_link_libraries(ib_tws 
+    ${Boost_LIBRARIES} 
+    ${OPENSSL_LIBRARIES}
+    ${LIBRARY_OUTPUT_PATH}/libbid.a
+)
 
 # Output path configuration
 set_target_properties(ib_tws PROPERTIES

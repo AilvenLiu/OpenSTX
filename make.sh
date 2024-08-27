@@ -14,10 +14,10 @@ if [ -d "$BUILD_DIR" ]; then
     rm -rf "$BUILD_DIR"
 fi
 
-if [ -d "$LIB_DIR" ]; then
-    echo "Removing old lib directory..."
-    rm -rf "$LIB_DIR"
-fi
+# if [ -d "$LIB_DIR" ]; then
+#     echo "Removing old lib directory..."
+#     rm -rf "$LIB_DIR"
+# fi
 
 if [ -d "$BIN_DIR" ]; then
     echo "Removing old  directory..."
@@ -27,7 +27,7 @@ fi
 # Create build directory
 echo "Creating build, lib, bin directory..."
 mkdir -p "$BUILD_DIR"
-mkdir -p "$LIB_DIR"
+# mkdir -p "$LIB_DIR"
 mkdir -p "$BIN_DIR"
 cd "$BUILD_DIR"
 

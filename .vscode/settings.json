@@ -61,6 +61,9 @@
         "span": "cpp",
         "csignal": "cpp",
         "condition_variable": "cpp",
-        "chrono": "cpp"
+        "chrono": "cpp",
+        "any": "cpp",
+        "forward_list": "cpp",
+        "valarray": "cpp"
     }
 }

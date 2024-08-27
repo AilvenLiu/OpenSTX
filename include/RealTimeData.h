@@ -42,6 +42,7 @@
 #include "nlohmann/json.hpp"
 #include "EClientSocket.h"
 #include "EWrapper.h"
+#include "Decimal.h"
 #include "Logger.h"
 #include "TimescaleDB.h"
 
@@ -83,7 +84,7 @@ private:
     int requestId;
     double yesterdayClose;
     bool running;
-    double previousVolume;
+    Decimal previousVolume;
 
     std::thread readerThread;
     std::thread processDataThread;
@@ -108,7 +109,7 @@ private:
     // 计算指标的方法
     double calculateWeightedAveragePrice();
     double calculateBuySellRatio();
-    double calculateDepthChange();
+    Decimal calculateDepthChange();
     double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
     double calculatePriceMomentum();
     double calculateTradeDensity();

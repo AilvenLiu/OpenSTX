@@ -204,7 +204,7 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
                      ", Operation " + std::to_string(operation) +
                      ", Side " + std::to_string(side) +
                      ", Price " + std::to_string(price) +
-                     ", Size " + std::to_string(size));
+                     ", Size " + decimalToString(size));
 }
 
 void RealTimeData::processL2Data(int position, double price, Decimal size, int side) {
@@ -228,7 +228,7 @@ void RealTimeData::aggregateMinuteData() {
     double close = l1Prices.back();
     double high = *std::max_element(l1Prices.begin(), l1Prices.end());
     double low = *std::min_element(l1Prices.begin(), l1Prices.end());
-    double volume = l1Volumes.back() - previousVolume;
+    Decimal volume = sub(l1Volumes.back(), previousVolume);
     previousVolume = l1Volumes.back();
 
     // 计算 L2 数据的动态区间
@@ -249,16 +249,16 @@ void RealTimeData::aggregateMinuteData() {
     json l2DataJson = json::array();
 
     // 初始化区间
-    std::vector<std::pair<double, double>> priceLevelBuckets(20, {0.0, 0.0});
+    std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
     for (const auto& data : rawL2Data) {
         int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
         bucketIndex = std::clamp(bucketIndex, 0, 19); // 防止越界
 
         if (data.side == "Buy") {
-            priceLevelBuckets[bucketIndex].first += data.volume;
+            priceLevelBuckets[bucketIndex].first = add(priceLevelBuckets[bucketIndex].first, data.volume);
         } else {
-            priceLevelBuckets[bucketIndex].second += data.volume;
+            priceLevelBuckets[bucketIndex].second = add(priceLevelBuckets[bucketIndex].second, data.volume);
         }
     }
 
@@ -266,8 +266,8 @@ void RealTimeData::aggregateMinuteData() {
         double midPrice = minPrice + (i + 0.5) * interval;
         json level = {
             {"Price", midPrice},
-            {"BuyVolume", priceLevelBuckets[i].first},
-            {"SellVolume", priceLevelBuckets[i].second}
+            {"BuyVolume", decimalToString(priceLevelBuckets[i].first)},
+            {"SellVolume", decimalToString(priceLevelBuckets[i].second)}
         };
         l2DataJson.push_back(level);
     }
@@ -275,7 +275,7 @@ void RealTimeData::aggregateMinuteData() {
     // 计算金融指标
     double weightedAvgPrice = calculateWeightedAveragePrice();
     double buySellRatio = calculateBuySellRatio();
-    double depthChange = calculateDepthChange();
+    Decimal depthChange = calculateDepthChange();
     double impliedLiquidity = calculateImpliedLiquidity(volume, l2DataJson.size());
     double priceMomentum = calculatePriceMomentum();
     double tradeDensity = calculateTradeDensity();
@@ -296,13 +296,13 @@ void RealTimeData::aggregateMinuteData() {
         {"High", high},
         {"Low", low},
         {"Close", close},
-        {"Volume", volume}
+        {"Volume", decimalToString(volume)}
     };
 
     json featureDataJson = {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
-        {"DepthChange", depthChange},
+        {"DepthChange", decimalToString(depthChange)},
         {"ImpliedLiquidity", impliedLiquidity},
         {"PriceMomentum", priceMomentum},
         {"TradeDensity", tradeDensity},
@@ -342,34 +342,41 @@ void RealTimeData::writeToSharedMemory(const std::string &data) {
 
 // 各种指标计算的具体实现
 double RealTimeData::calculateWeightedAveragePrice() {
-    double totalWeightedPrice = 0.0;
-    double totalVolume = 0.0;
+    Decimal totalWeightedPrice = 0;
+    Decimal totalVolume = 0;
     for (size_t i = 0; i < l1Prices.size(); ++i) {
-        totalWeightedPrice += l1Prices[i] * l1Volumes[i];
-        totalVolume += l1Volumes[i];
+        totalWeightedPrice = add(totalWeightedPrice, mul(doubleToDecimal(l1Prices[i]), l1Volumes[i]));
+        totalVolume = add(totalVolume, l1Volumes[i]);
     }
-    return totalVolume != 0.0 ? totalWeightedPrice / totalVolume : 0.0;
+    return totalVolume == 0 ? 0.0 : decimalToDouble(div(totalWeightedPrice, totalVolume));
 }
 
 double RealTimeData::calculateBuySellRatio() {
-    double totalBuyVolume = 0.0;
-    double totalSellVolume = 0.0;
+    Decimal totalBuyVolume = 0;
+    Decimal totalSellVolume = 0;
     for (const auto& level : rawL2Data) {
         if (level.side == "Buy") {
-            totalBuyVolume += level.volume;
+            totalBuyVolume = add(totalBuyVolume, level.volume);
         } else {
-            totalSellVolume += level.volume;
+            totalSellVolume = add(totalSellVolume, level.volume);
         }
     }
-    return totalSellVolume != 0.0 ? totalBuyVolume / totalSellVolume : 0.0;
+    return totalSellVolume == 0 ? 0.0 : decimalToDouble(div(totalBuyVolume, totalSellVolume));
 }
 
-double RealTimeData::calculateDepthChange() {
-    double depthChange = 0.0;
+Decimal RealTimeData::calculateDepthChange() {
+    Decimal totalBuyVolume = 0;
+    Decimal totalSellVolume = 0;
+
     for (const auto& level : rawL2Data) {
-        depthChange += std::abs(level.buyVolume - level.sellVolume);
+        if (level.side == "Buy") {
+            totalBuyVolume = add(totalBuyVolume, level.volume);
+        } else if (level.side == "Sell") {
+            totalSellVolume = add(totalSellVolume, level.volume);
+        }
     }
-    return depthChange;
+
+    return sub(totalBuyVolume, totalSellVolume);
 }
 
 double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) {
@@ -436,4 +443,63 @@ double RealTimeData::calculateVWAP() {
     }
 
     return cumulativePriceVolume / cumulativeVolume;
+}
+
+void RealTimeData::nextValidId(OrderId orderId) {
+    if (orderId <= 0) {
+        STX_LOGE(logger, "Received an invalid order ID: " + std::to_string(orderId));
+        return;
+    }
+
+    nextOrderId = orderId; 
+    STX_LOGI(logger, "Next valid order ID received: " + std::to_string(orderId));
+}
+
+void RealTimeData::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
+    STX_LOGE(logger, "Error occurred: ID=" + std::to_string(id) + ", Code=" + std::to_string(errorCode) + ", Message=" + errorString);
+
+    switch (errorCode) {
+        case 1100: // 连接丢失
+            STX_LOGE(logger, "IB TWS connection lost, attempting to reconnect...");
+            reconnect();
+            break;
+        case 1101: // 连接重置
+            STX_LOGE(logger, "IB TWS connection reset, attempting to reconnect...");
+            reconnect();
+            break;
+        case 1102: // 重新连接成功
+            STX_LOGI(logger, "IB TWS reconnected successfully.");
+            break;
+        case 509: // 阻塞请求超限
+            STX_LOGW(logger, "Max number of requests exceeded, consider reducing request frequency.");
+            break;
+        default:
+            STX_LOGW(logger, "Unhandled error code: " + std::to_string(errorCode) + ", additional info: " + advancedOrderRejectJson);
+            break;
+    }
+}
+
+// reconnect 方法的实现
+void RealTimeData::reconnect() {
+    STX_LOGI(logger, "Attempting to reconnect to IB TWS...");
+
+    // 停止当前连接
+    stop();
+
+    // 尝试重新连接
+    int attempts = 0;
+    const int max_attempts = 5;
+    while (attempts < max_attempts) {
+        if (connectToIB()) {
+            STX_LOGI(logger, "Reconnected to IB TWS successfully.");
+            return;
+        } else {
+            STX_LOGE(logger, "Reconnection attempt " + std::to_string(attempts + 1) + " failed.");
+        }
+        ++attempts;
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+    }
+
+    STX_LOGE(logger, "Failed to reconnect to IB TWS after " + std::to_string(max_attempts) + " attempts.");
+    running = false;
 }

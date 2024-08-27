@@ -25,6 +25,7 @@ file(GLOB_RECURSE PROJECT_SOURCES
 # Specify the output directories for binaries and libraries
 set(EXECUTABLE_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/bin")
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
+link_directories(${LIBRARY_OUTPUT_PATH})
 
 # Set the path to the TWS API dynamic library
 set(TWS_LIB "${PROJECT_SOURCE_DIR}/third_parts/ib_tws/lib/libib_tws.dylib")
@@ -69,6 +70,7 @@ target_link_libraries(OpenSTX
     ${Boost_LIBRARIES}       # Link Boost libraries
     ${OPENSSL_LIBRARIES}     # Link OpenSSL libraries
     ${PQXX_LIB}              # Link libpqxx dynamic library
+    ${LIBRARY_OUTPUT_PATH}/libbid.a 
 )
 
 # Installation rules
