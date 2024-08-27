@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -Werror
 LDFLAGS = -lm
 
-INSTALL_DIR = /usr/local
+INSTALL_DIR = ..
 INCLUDE_DIR = $(INSTALL_DIR)/include/bid
 LIB_DIR = $(INSTALL_DIR)/lib
 

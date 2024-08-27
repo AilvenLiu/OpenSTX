@@ -26,6 +26,11 @@ OpenSTX
     └── libpqxx
 ```
 
+### **!!Special Notification!!**
+
+Manage your cloud database via [RDS dashboard](https://rdsnext.console.aliyun.com/dashboard) but not the garbaged DMS if alicloud postgrasql is used.
+
+
 ### Directory Breakdown
 
 - **bin/**: Contains the compiled binaries.
@@ -157,6 +162,11 @@ Before building the project on macOS, ensure you have the following tools instal
    ```bash
    brew install python
    ```
+
+### **!!Special Notification!!**
+
+Manage your cloud database via [RDS dashboard](https://rdsnext.console.aliyun.com/dashboard) but not the garbaged DMS.
+
 
 ### Configuring Environment Variables
 
