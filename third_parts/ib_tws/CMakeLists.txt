@@ -15,7 +15,7 @@ file(GLOB API_SOURCES "${PROJECT_SOURCE_DIR}/src/*.cpp")
 
 # Specify the output directory for the dynamic library
 set(LIBRARY_OUTPUT_PATH "${PROJECT_SOURCE_DIR}/lib")
-link_directories(LIBRARY_OUTPUT_PATH)
+link_directories(${LIBRARY_OUTPUT_PATH})
 
 # Create a shared library (dynamic library)
 add_library(ib_tws SHARED ${API_SOURCES})

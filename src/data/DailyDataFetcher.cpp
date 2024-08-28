@@ -19,61 +19,185 @@
  * Date: 2024
  *************************************************************************/
 
-#include "DailyDataFetcher.h"
 #include <sstream>
 #include <iomanip>
 #include <cmath>
 #include <algorithm>
 #include <stdexcept>
+#include "DailyDataFetcher.h"
 
 DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db)
-    : logger(logger), db(_db), ibClient(std::make_unique<IBClient>(logger, db)) {}
+    : logger(logger), db(_db), 
+      osSignal(std::make_unique<EReaderOSSignal>(2000)),
+      client(nullptr),
+      reader(nullptr), 
+      connected(false), running(false), dataReceived(false), nextRequestId(0) {
+    
+    if (!logger) {
+        throw std::runtime_error("Logger is null");
+    }
+    if (!db) {
+        STX_LOGE(logger, "TimescaleDB is null");
+        throw std::runtime_error("TimescaleDB is null");
+    }
+    STX_LOGI(logger, "DailyDataFetcher object created successfully.");
+}
 
 DailyDataFetcher::~DailyDataFetcher() {
-    STX_LOGW(logger, "Destructor called, cleaning up resources.");
     stop();
 }
 
+bool DailyDataFetcher::connectToIB() {
+    std::lock_guard<std::mutex> lock(clientMutex);
+
+    try {
+        client = std::make_unique<EClientSocket>(this, osSignal.get());
+        if (!client) {
+            throw std::runtime_error("Failed to create EClientSocket");
+        }
+
+        const char *host = "127.0.0.1";
+        int port = 7496;
+        int clientId = 2;
+
+        if (client->eConnect(host, port, clientId)) {
+            STX_LOGI(logger, "Connected to IB TWS.");
+
+            reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            reader->start();
+
+            connected = true;
+            return true;
+        } else {
+            STX_LOGE(logger, "Failed to connect to IB TWS.");
+            stop();
+            return false;
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
+        stop();
+        return false;
+    }
+}
+
 void DailyDataFetcher::stop() {
-    ibClient->disconnect();
-    STX_LOGW(logger, "Resources released.");
+    if (!running) return;
+
+    running = false;
+    {
+        std::lock_guard<std::mutex> lock(clientMutex);
+        if (client && client->isConnected()) {
+            client->eDisconnect();
+            STX_LOGI(logger, "Disconnected from IB TWS.");
+        }
+        client.reset();
+        reader.reset();
+    }
+
+    connected = false;
+    STX_LOGI(logger, "DailyDataFetcher stopped and cleaned up.");
 }
 
 void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
     STX_LOGI(logger, "Fetching and processing historical data for symbol: " + symbol);
 
-    if (!ibClient->isConnected()) {
-        STX_LOGW(logger, "Connection is not established. Attempting to reconnect...");
-        if (!ibClient->connect("127.0.0.1", 7496, 2)) {
-            STX_LOGE(logger, "Failed to connect IBClient for historical data fetching");
-            return;
-        }
+    if (!connectToIB()) {
+        STX_LOGE(logger, "Failed to connect to IB TWS.");
+        return;
     }
 
-    std::string endDateTime = getCurrentDate();
-    std::string startDateTime;
+    running = true;
 
-    if (incremental) {
-        startDateTime = db->getLastDailyEndDate(symbol);
-        if (startDateTime.empty()) {
-            startDateTime = calculateStartDateFromDuration(duration);
-        }
-    } else {
+    std::string endDateTime = getCurrentDate();
+    std::string startDateTime = incremental ? db->getLastDailyEndDate(symbol) : calculateStartDateFromDuration(duration);
+    if (startDateTime.empty()) {
         startDateTime = calculateStartDateFromDuration(duration);
     }
 
     auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
     for (const auto& range : dateRanges) {
-        ibClient->requestDailyData(symbol, range.first, "1 day", incremental);
-        auto historicalData = ibClient->getDailyData();
+        requestDailyData(symbol, range.first, range.second, "1 day");
+        auto historicalData = historicalDataBuffer;
 
         for (const auto& data : historicalData) {
             storeDailyData(symbol, data);
         }
     }
 
+    stop();
     STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + symbol);
+}
+
+void DailyDataFetcher::requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize) {
+    historicalDataBuffer.clear();
+    STX_LOGI(logger, "Requesting historical data for " + symbol);
+
+    Contract contract;
+    contract.symbol = symbol;
+    contract.secType = "STK";
+    contract.exchange = "SMART";
+    contract.currency = "USD";
+
+    std::string whatToShow = "TRADES";
+    bool useRTH = true;
+    int formatDate = 1;  // Use yyyymmdd hh:mm:ss format
+
+    client->reqHistoricalData(nextRequestId++, contract, endDate, calculateStartDateFromDuration(barSize), barSize, whatToShow, useRTH, formatDate, false, TagValueListSPtr());
+    waitForData();
+    STX_LOGI(logger, "Completed historical data request for " + symbol);
+}
+
+void DailyDataFetcher::historicalData(TickerId reqId, const Bar& bar) {
+    std::map<std::string, std::variant<double, std::string>> data;
+    std::tm timeStruct{};
+    parseDateString(bar.time, timeStruct);
+    std::ostringstream oss;
+    oss << std::put_time(&timeStruct, "%Y-%m-%d %H:%M:%S");
+    data["date"] = oss.str();
+    data["open"] = bar.open;
+    data["high"] = bar.high;
+    data["low"] = bar.low;
+    data["close"] = bar.close;
+    data["volume"] = bar.volume;
+
+    historicalDataBuffer.push_back(data);
+}
+
+void DailyDataFetcher::historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) {
+    std::unique_lock<std::mutex> lock(cvMutex);
+    dataReceived = true;
+    cv.notify_one();
+}
+
+void DailyDataFetcher::waitForData() {
+    std::unique_lock<std::mutex> lock(cvMutex);
+    cv.wait(lock, [this] { return dataReceived; });
+    dataReceived = false;
+}
+
+void DailyDataFetcher::parseDateString(const std::string& dateStr, std::tm& timeStruct) {
+    std::istringstream ss(dateStr);
+    ss >> std::get_time(&timeStruct, "%Y%m%d %H:%M:%S");
+}
+
+void DailyDataFetcher::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
+    STX_LOGE(logger, "Error: " + std::to_string(id) + " - " + std::to_string(errorCode) + " - " + errorString);
+
+    if (errorCode == 509 || errorCode == 1100) { 
+        std::lock_guard<std::mutex> lock(cvMutex);
+        connected = false;
+        dataReceived = true;
+        cv.notify_one();
+    } else {
+        std::unique_lock<std::mutex> lock(cvMutex);
+        dataReceived = true;
+        cv.notify_one();
+    }
+}
+
+void DailyDataFetcher::nextValidId(OrderId orderId) {
+    nextRequestId = orderId;
 }
 
 void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {

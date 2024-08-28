@@ -1,4 +1,4 @@
-/* Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
+/* Copyright (C) 2024 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
  * and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable. */
 
 #pragma once
@@ -90,7 +90,6 @@ struct Order
 
 	// financial advisors only
 	std::string faGroup;
-	std::string faProfile;
 	std::string faMethod;
 	std::string faPercentage;
 
@@ -244,6 +243,12 @@ struct Order
 	double competeAgainstBestOffset = UNSET_DOUBLE;
 	double midOffsetAtWhole = UNSET_DOUBLE;
 	double midOffsetAtHalf = UNSET_DOUBLE;
+	std::string customerAccount = "";
+	bool professionalCustomer = false;
+	std::string bondAccruedInterest = "";
+
+	std::string externalUserId = "";
+	int manualOrderIndicator = UNSET_INTEGER;
 
 public:
 

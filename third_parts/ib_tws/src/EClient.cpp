@@ -1,4 +1,4 @@
-/* Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
+/* Copyright (C) 2024 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
  * and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable. */
 
 #include "StdAfx.h"
@@ -20,6 +20,7 @@
 #include "ETransport.h"
 #include "FamilyCode.h"
 #include "EClientException.h"
+#include "Utils.h"
 
 #include <sstream>
 #include <iomanip>
@@ -53,7 +54,7 @@ void EClient::EncodeField<double>(std::ostream& os, double doubleValue)
         snprintf(str, sizeof(str), "%s", INFINITY_STR.c_str());
     } 
     else {
-        snprintf(str, sizeof(str), "%.10g", doubleValue);
+        snprintf(str, sizeof(str), "%.14g", doubleValue);
     }
 
     EncodeField<const char*>(os, str);
@@ -63,7 +64,7 @@ template<>
 void EClient::EncodeField<Decimal>(std::ostream& os, Decimal decimalValue)
 {
     char str[128];
-    snprintf(str, sizeof(str), "%s", decimalToString(decimalValue).c_str());
+    snprintf(str, sizeof(str), "%s", DecimalFunctions::decimalToString(decimalValue).c_str());
 
     EncodeField<const char*>(os, str);
 }
@@ -86,7 +87,8 @@ void EClient::EncodeField<std::string>(std::ostream& os, std::string value)
 bool EClient::isAsciiPrintable(const std::string& s)
 {
     return std::all_of(s.begin(), s.end(), [](char c) {
-        return static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127;
+        return (static_cast<unsigned char>(c) >= 32 && static_cast<unsigned char>(c) < 127) || 
+            static_cast<unsigned char>(c) == 9 || static_cast<unsigned char>(c) == 10 || static_cast<unsigned char>(c) == 13;
     });
 }
 
@@ -1625,6 +1627,24 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
         }
     }
 
+    if (m_serverVersion < MIN_SERVER_VER_CUSTOMER_ACCOUNT && !order.customerAccount.empty()) {
+        m_pEWrapper->error(id, UPDATE_TWS.code(), UPDATE_TWS.msg() + " It does not support customer account parameter", "");
+        return;
+    }
+
+    if (m_serverVersion < MIN_SERVER_VER_PROFESSIONAL_CUSTOMER && order.professionalCustomer) {
+        m_pEWrapper->error(id, UPDATE_TWS.code(), UPDATE_TWS.msg() + " It does not support professional customer parameter", "");
+        return;
+    }
+
+    if (m_serverVersion < MIN_SERVER_VER_RFQ_FIELDS) {
+        if (!order.externalUserId.empty() || order.manualOrderIndicator != UNSET_INTEGER) {
+            m_pEWrapper->error(id, UPDATE_TWS.code(), UPDATE_TWS.msg() +
+                "  It does not support external user id and manual order indicator parameters", "");
+            return;
+        }
+    }
+
     std::stringstream msg;
     prepareBuffer( msg);
 
@@ -1787,7 +1807,9 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
         ENCODE_FIELD( order.faGroup); // srv v13 and above
         ENCODE_FIELD( order.faMethod); // srv v13 and above
         ENCODE_FIELD( order.faPercentage); // srv v13 and above
-        ENCODE_FIELD( order.faProfile); // srv v13 and above
+        if (m_serverVersion < MIN_SERVER_VER_FA_PROFILE_DESUPPORT) {
+            ENCODE_FIELD(""); // send deprecated faProfile field
+        }
 
         if (m_serverVersion >= MIN_SERVER_VER_MODELS_SUPPORT) {
             ENCODE_FIELD( order.modelCode);
@@ -1799,9 +1821,6 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
         if (m_serverVersion >= MIN_SERVER_VER_SSHORTX_OLD) { 
             ENCODE_FIELD( order.exemptCode);
         }
-
-        // not needed anymore
-        //bool isVolOrder = (order.orderType.CompareNoCase("VOL") == 0);
 
         // srv v19 and above fields
         ENCODE_FIELD( order.ocaType);
@@ -1974,7 +1993,7 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
         }
 
         if (m_serverVersion >= MIN_SERVER_VER_PEGGED_TO_BENCHMARK) {
-            if (order.orderType == "PEG BENCH") {
+            if (Utils::isPegBenchOrder(order.orderType)) {
                 ENCODE_FIELD(order.referenceContractId);
                 ENCODE_FIELD(order.isPeggedChangeAmountDecrease);
                 ENCODE_FIELD(order.peggedChangeAmount);
@@ -2067,20 +2086,33 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
                 ENCODE_FIELD_MAX(order.minTradeQty);
             }
             bool sendMidOffsets = false;
-            if (order.orderType == "PEG BEST") {
+            if (Utils::isPegBestOrder(order.orderType)) {
                 ENCODE_FIELD_MAX(order.minCompeteSize);
                 ENCODE_FIELD_MAX(order.competeAgainstBestOffset);
                 if (order.competeAgainstBestOffset == COMPETE_AGAINST_BEST_OFFSET_UP_TO_MID) {
                     sendMidOffsets = true;
                 }
             } 
-            else if (order.orderType == "PEG MID") {
+            else if (Utils::isPegMidOrder(order.orderType)) {
                 sendMidOffsets = true;
             }
             if (sendMidOffsets) {
                 ENCODE_FIELD_MAX(order.midOffsetAtWhole);
                 ENCODE_FIELD_MAX(order.midOffsetAtHalf);
             }
+        }
+
+        if (m_serverVersion >= MIN_SERVER_VER_CUSTOMER_ACCOUNT) {
+            ENCODE_FIELD(order.customerAccount);
+        }
+
+        if (m_serverVersion >= MIN_SERVER_VER_PROFESSIONAL_CUSTOMER) {
+            ENCODE_FIELD(order.professionalCustomer);
+        }
+
+        if (m_serverVersion >= MIN_SERVER_VER_RFQ_FIELDS) {
+            ENCODE_FIELD(order.externalUserId);
+            ENCODE_FIELD(order.manualOrderIndicator);
         }
     }
     catch (EClientException& ex) {
@@ -2091,7 +2123,7 @@ void EClient::placeOrder( OrderId id, const Contract& contract, const Order& ord
     closeAndSend(msg.str());
 }
 
-void EClient::cancelOrder( OrderId id, const std::string& manualOrderCancelTime)
+void EClient::cancelOrder(OrderId id, const OrderCancel& orderCancel)
 {
     // not connected?
     if( !isConnected()) {
@@ -2099,23 +2131,43 @@ void EClient::cancelOrder( OrderId id, const std::string& manualOrderCancelTime)
         return;
     }
 
-    if (m_serverVersion < MIN_SERVER_VER_MANUAL_ORDER_TIME && !manualOrderCancelTime.empty()) {
+    if (m_serverVersion < MIN_SERVER_VER_MANUAL_ORDER_TIME && !orderCancel.manualOrderCancelTime.empty()) {
         m_pEWrapper->error(id, UPDATE_TWS.code(), UPDATE_TWS.msg() + " It does not support manual order cancel time attribute", "");
         return;
     }
 
-    const int VERSION = 1;
+    if (m_serverVersion < MIN_SERVER_VER_RFQ_FIELDS) {
+        if (!orderCancel.extOperator.empty() || !orderCancel.externalUserId.empty() || orderCancel.manualOrderIndicator != UNSET_INTEGER) {
+            m_pEWrapper->error(id, UPDATE_TWS.code(), UPDATE_TWS.msg() +
+                "  It does not support ext operator, external user id and manual order indicator parameters", "");
+            return;
+        }
+    }
 
     // send cancel order msg
     std::stringstream msg;
-    prepareBuffer( msg);
+    prepareBuffer(msg);
 
-    ENCODE_FIELD( CANCEL_ORDER);
-    ENCODE_FIELD( VERSION);
-    ENCODE_FIELD( id);
+    try {
+        const int VERSION = 1;
 
-    if (m_serverVersion >= MIN_SERVER_VER_MANUAL_ORDER_TIME) {
-        ENCODE_FIELD(manualOrderCancelTime);
+        ENCODE_FIELD( CANCEL_ORDER);
+        ENCODE_FIELD( VERSION);
+        ENCODE_FIELD( id);
+
+        if (m_serverVersion >= MIN_SERVER_VER_MANUAL_ORDER_TIME) {
+            ENCODE_FIELD(orderCancel.manualOrderCancelTime);
+        }
+
+        if (m_serverVersion >= MIN_SERVER_VER_RFQ_FIELDS) {
+            ENCODE_FIELD(orderCancel.extOperator);
+            ENCODE_FIELD(orderCancel.externalUserId);
+            ENCODE_FIELD(orderCancel.manualOrderIndicator);
+        }
+    }
+    catch (EClientException& ex) {
+        m_pEWrapper->error(id, ex.error().code(), ex.error().msg() + ex.text(), "");
+        return;
     }
 
     closeAndSend( msg.str());
@@ -2365,11 +2417,10 @@ void EClient::requestFA(faDataType pFaDataType)
         return;
     }
 
-    // Not needed anymore validation
-    //if( m_serverVersion < 13) {
-    //	m_pEWrapper->error( NO_VALID_ID, UPDATE_TWS.code(), UPDATE_TWS.msg());
-    //	return;
-    //}
+    if (m_serverVersion >= MIN_SERVER_VER_FA_PROFILE_DESUPPORT && pFaDataType == 2) {
+        m_pEWrapper->error( NO_VALID_ID, FA_PROFILE_NOT_SUPPORTED.code(), FA_PROFILE_NOT_SUPPORTED.msg(), "");
+        return;
+    }
 
     std::stringstream msg;
     prepareBuffer( msg);
@@ -2387,15 +2438,14 @@ void EClient::replaceFA(int reqId, faDataType pFaDataType, const std::string& cx
 {
     // not connected?
     if( !isConnected()) {
-        m_pEWrapper->error( NO_VALID_ID, NOT_CONNECTED.code(), NOT_CONNECTED.msg(), "");
+        m_pEWrapper->error( reqId, NOT_CONNECTED.code(), NOT_CONNECTED.msg(), "");
         return;
     }
 
-    // Not needed anymore validation
-    //if( m_serverVersion < 13) {
-    //	m_pEWrapper->error( NO_VALID_ID, UPDATE_TWS.code(), UPDATE_TWS.msg());
-    //	return;
-    //}
+    if (m_serverVersion >= MIN_SERVER_VER_FA_PROFILE_DESUPPORT && pFaDataType == 2) {
+        m_pEWrapper->error( reqId, FA_PROFILE_NOT_SUPPORTED.code(), FA_PROFILE_NOT_SUPPORTED.msg(), "");
+        return;
+    }
 
     std::stringstream msg;
     prepareBuffer( msg);
@@ -2423,7 +2473,7 @@ void EClient::replaceFA(int reqId, faDataType pFaDataType, const std::string& cx
 
 void EClient::exerciseOptions( TickerId tickerId, const Contract& contract,
                               int exerciseAction, int exerciseQuantity,
-                              const std::string& account, int override)
+                              const std::string& account, int override, const std::string& manualOrderTime, const std::string& customerAccount, bool professionalCustomer)
 {
     // not connected?
     if( !isConnected()) {
@@ -2443,6 +2493,24 @@ void EClient::exerciseOptions( TickerId tickerId, const Contract& contract,
                 "  It does not support conId, multiplier and tradingClass parameters in exerciseOptions.", "");
             return;
         }
+    }
+
+    if (m_serverVersion < MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS && !manualOrderTime.empty()) {
+        m_pEWrapper->error(tickerId, UPDATE_TWS.code(), UPDATE_TWS.msg() +
+            "  It does not support manual order time parameter in exerciseOptions.", "");
+        return;
+    }
+
+    if (m_serverVersion < MIN_SERVER_VER_CUSTOMER_ACCOUNT && !customerAccount.empty()) {
+        m_pEWrapper->error(tickerId, UPDATE_TWS.code(), UPDATE_TWS.msg() +
+            "  It does not support customer account parameter in exerciseOptions.", "");
+        return;
+    }
+
+    if (m_serverVersion < MIN_SERVER_VER_PROFESSIONAL_CUSTOMER && professionalCustomer) {
+        m_pEWrapper->error(tickerId, UPDATE_TWS.code(), UPDATE_TWS.msg() +
+            "  It does not support professional customer parameter in exerciseOptions.", "");
+        return;
     }
 
     std::stringstream msg;
@@ -2475,6 +2543,15 @@ void EClient::exerciseOptions( TickerId tickerId, const Contract& contract,
         ENCODE_FIELD( exerciseQuantity);
         ENCODE_FIELD( account);
         ENCODE_FIELD( override);
+        if (m_serverVersion >= MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS) {
+            ENCODE_FIELD( manualOrderTime);
+        }
+        if (m_serverVersion >= MIN_SERVER_VER_CUSTOMER_ACCOUNT) {
+            ENCODE_FIELD(customerAccount);
+        }
+        if (m_serverVersion >= MIN_SERVER_VER_PROFESSIONAL_CUSTOMER) {
+            ENCODE_FIELD(professionalCustomer);
+        }
     }
     catch (EClientException& ex) {
         m_pEWrapper->error(tickerId, ex.error().code(), ex.error().msg() + ex.text(), "");
@@ -3727,21 +3804,27 @@ void EClient::reqWshEventData(int reqId, const WshEventData &wshEventData) {
     std::stringstream msg;
     prepareBuffer(msg);
 
-    ENCODE_FIELD(REQ_WSH_EVENT_DATA)
-    ENCODE_FIELD(reqId)
-    ENCODE_FIELD(wshEventData.conId)
+    try {
+        ENCODE_FIELD(REQ_WSH_EVENT_DATA)
+        ENCODE_FIELD(reqId)
+        ENCODE_FIELD(wshEventData.conId)
 
-    if (m_serverVersion >= MIN_SERVER_VER_WSH_EVENT_DATA_FILTERS) {
-        ENCODE_FIELD(wshEventData.filter);
-        ENCODE_FIELD(wshEventData.fillWatchlist);
-        ENCODE_FIELD(wshEventData.fillPortfolio);
-        ENCODE_FIELD(wshEventData.fillCompetitors);
+        if (m_serverVersion >= MIN_SERVER_VER_WSH_EVENT_DATA_FILTERS) {
+            ENCODE_FIELD(wshEventData.filter);
+            ENCODE_FIELD(wshEventData.fillWatchlist);
+            ENCODE_FIELD(wshEventData.fillPortfolio);
+            ENCODE_FIELD(wshEventData.fillCompetitors);
+        }
+
+        if (m_serverVersion >= MIN_SERVER_VER_WSH_EVENT_DATA_FILTERS_DATE) {
+            ENCODE_FIELD(wshEventData.startDate);
+            ENCODE_FIELD(wshEventData.endDate);
+            ENCODE_FIELD(wshEventData.totalLimit);
+        }
     }
-
-    if (m_serverVersion >= MIN_SERVER_VER_WSH_EVENT_DATA_FILTERS_DATE) {
-        ENCODE_FIELD(wshEventData.startDate);
-        ENCODE_FIELD(wshEventData.endDate);
-        ENCODE_FIELD(wshEventData.totalLimit);
+    catch (EClientException& ex) {
+        m_pEWrapper->error(reqId, ex.error().code(), ex.error().msg() + ex.text(), "");
+        return;
     }
 
     closeAndSend(msg.str());
@@ -3807,6 +3890,21 @@ void EClient::reqUserInfo(int reqId) {
         ENCODE_FIELD(reqId)
 
         closeAndSend(msg.str());
+}
+
+void EClient::validateInvalidSymbols(const std::string& host) {
+
+    if (!host.empty() && !isAsciiPrintable(host)) {
+        throw EClientException(INVALID_SYMBOL, host);
+    }
+
+    if (!m_connectOptions.empty() && !isAsciiPrintable(m_connectOptions)) {
+        throw EClientException(INVALID_SYMBOL, m_connectOptions);
+    }
+
+    if (!m_optionalCapabilities.empty() && !isAsciiPrintable(m_optionalCapabilities)) {
+        throw EClientException(INVALID_SYMBOL, m_optionalCapabilities);
+    }
 }
 
 bool EClient::extraAuth() {

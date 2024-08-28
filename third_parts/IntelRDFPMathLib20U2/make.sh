@@ -44,5 +44,5 @@ cp "$LOCAL_LIB_DIR/libbid.a" "$IBTWS_LIB_DIR/libbid.a" || { echo "Failed to copy
 find "$LIBRARY_DIR" -type f \( -name "*.a" -o -name "*.o" \) -exec rm -f {} \; || { echo "Failed to remove .a and .o files in LIBRARY directory"; exit 1; }
 
 # Success message
-echo "Static library successfully installed to $LOCAL_LIB_DIR and copied to $UPPER_LIB_DIR and $IB_TWS"
+echo "Static library successfully installed to $LOCAL_LIB_DIR and copied to $UPPER_LIB_DIR and $IBTWS_LIB_DIR"
 echo "All .a and .o files in LIBRARY directory have been removed."

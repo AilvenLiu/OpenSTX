@@ -16,7 +16,6 @@ include_directories(${PROJECT_SOURCE_DIR}/third_parts/libpqxx/include)
 file(GLOB_RECURSE PROJECT_SOURCES 
     "${PROJECT_SOURCE_DIR}/src/logger/Logger.cpp"
     "${PROJECT_SOURCE_DIR}/src/database/TimescaleDB.cpp"
-    "${PROJECT_SOURCE_DIR}/src/data/IBClient.cpp"
     "${PROJECT_SOURCE_DIR}/src/data/RealTimeData.cpp"
     "${PROJECT_SOURCE_DIR}/src/data/DailyDataFetcher.cpp"
     "${PROJECT_SOURCE_DIR}/src/main.cpp"

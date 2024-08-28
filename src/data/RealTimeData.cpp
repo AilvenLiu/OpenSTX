@@ -28,38 +28,26 @@
 
 using json = nlohmann::json;
 
-RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db)
-    : osSignal(std::make_unique<EReaderOSSignal>(2000)), 
-      client(std::make_unique<EClientSocket>(this, osSignal.get())), 
-      reader(std::make_unique<EReader>(client.get(), osSignal.get())),
-      logger(log), timescaleDB(db), nextOrderId(0), 
-      requestId(0), yesterdayClose(0.0), running(false), previousVolume(0) {
+RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db)
+    : logger(log), db(_db), 
+      osSignal(std::make_unique<EReaderOSSignal>(2000)), 
+      client(nullptr), 
+      reader(nullptr),
+      nextOrderId(0), 
+      requestId(0), yesterdayClose(0.0), running(false), previousVolume(0), connected(false) {
 
     if (!logger) {
         throw std::runtime_error("Logger is null");
     }
-    if (!timescaleDB) {
+    if (!db) {
         STX_LOGE(logger, "TimescaleDB is null");
         throw std::runtime_error("TimescaleDB is null");
     }
-
-    connected = false;
-
-    try {
-        connectToIB();
-        STX_LOGI(logger, "RealTimeData object created successfully.");
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error connecting to IB TWS: " + std::string(e.what()));
-        stop();
-    }
+    STX_LOGI(logger, "RealTimeData object created successfully.");
 }
 
 RealTimeData::~RealTimeData() {
-    stop();
-    if (readerThread.joinable()) {
-        readerThread.join();
-    }
-    boost::interprocess::shared_memory_object::remove("RealTimeData");
+    stop(); 
 }
 
 bool RealTimeData::connectToIB() {
@@ -76,11 +64,11 @@ bool RealTimeData::connectToIB() {
         int clientId = 0;
 
         if (client->eConnect(host, port, clientId)) {
-            if (!reader) {
-                reader = std::make_unique<EReader>(client.get(), osSignal.get());
-            }
+            STX_LOGI(logger, "Connected to IB TWS.");
 
+            reader = std::make_unique<EReader>(client.get(), osSignal.get());
             reader->start();
+
             readerThread = std::thread([this]() {
                 while (client->isConnected()) {
                     osSignal->waitForSignal();
@@ -93,7 +81,7 @@ bool RealTimeData::connectToIB() {
             return true;
         } else {
             STX_LOGE(logger, "Failed to connect to IB TWS.");
-            stop();
+            stop(); // 在连接失败时确保停止并清理资源
             return false;
         }
     } catch (const std::exception &e) {
@@ -104,6 +92,21 @@ bool RealTimeData::connectToIB() {
 }
 
 void RealTimeData::start() {
+    try {
+        if (!connected) {
+            if (connectToIB()) {
+                STX_LOGI(logger, "RealTimeData object created and connected successfully.");
+            } else {
+                STX_LOGE(logger, "Failed to connect to IB TWS.");
+                throw std::runtime_error("Connection to IB TWS failed during initialization.");
+            }
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error in RealTimeData constructor: " + std::string(e.what()));
+        stop(); 
+        throw;
+    }
+
     running = true;
 
     try {
@@ -114,22 +117,26 @@ void RealTimeData::start() {
         region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
         STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
 
-        requestData();
-        
-        processDataThread = std::thread([&]() {
-            while (running) {
-                auto now = std::chrono::system_clock::now();
-                auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
+        if (connected) {
+            requestData();
 
-                std::this_thread::sleep_until(nextMinute);
+            processDataThread = std::thread([&]() {
+                while (running) {
+                    auto now = std::chrono::system_clock::now();
+                    auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
 
-                aggregateMinuteData();
-            }
-        });
+                    std::this_thread::sleep_until(nextMinute);
 
+                    aggregateMinuteData();
+                }
+            });
+        } else {
+            STX_LOGE(logger, "Cannot start data processing as IB TWS connection is not established.");
+            stop(); // 如果连接未建立，停止处理
+        }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Exception in start: " + std::string(e.what()));
-        stop();
+        stop(); // 处理异常并清理资源
     }
 }
 
@@ -140,21 +147,25 @@ void RealTimeData::stop() {
 
     if (processDataThread.joinable()) {
         processDataThread.join();
+        STX_LOGI(logger, "processDataThread joined successfully");
+    }
+    if (readerThread.joinable()) {
+        readerThread.join();
+        STX_LOGI(logger, "readerThread joined successfully");
     }
 
     boost::interprocess::shared_memory_object::remove("RealTimeData");
 
-    if (client && client->isConnected()) {
-        client->eDisconnect();
-        STX_LOGI(logger, "Disconnected from IB TWS");
-    }
-
     {
         std::lock_guard<std::mutex> lock(clientMutex);
+        if (client && client->isConnected()) {
+            client->eDisconnect();
+            STX_LOGI(logger, "Disconnected from IB TWS");
+        }
         client.reset();
         reader.reset();
     }
-    
+
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
@@ -204,7 +215,7 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
                      ", Operation " + std::to_string(operation) +
                      ", Side " + std::to_string(side) +
                      ", Price " + std::to_string(price) +
-                     ", Size " + decimalToString(size));
+                     ", Size " + DecimalFunctions::decimalToString(size));
 }
 
 void RealTimeData::processL2Data(int position, double price, Decimal size, int side) {
@@ -228,7 +239,7 @@ void RealTimeData::aggregateMinuteData() {
     double close = l1Prices.back();
     double high = *std::max_element(l1Prices.begin(), l1Prices.end());
     double low = *std::min_element(l1Prices.begin(), l1Prices.end());
-    Decimal volume = sub(l1Volumes.back(), previousVolume);
+    Decimal volume = DecimalFunctions::sub(l1Volumes.back(), previousVolume);
     previousVolume = l1Volumes.back();
 
     // 计算 L2 数据的动态区间
@@ -256,9 +267,9 @@ void RealTimeData::aggregateMinuteData() {
         bucketIndex = std::clamp(bucketIndex, 0, 19); // 防止越界
 
         if (data.side == "Buy") {
-            priceLevelBuckets[bucketIndex].first = add(priceLevelBuckets[bucketIndex].first, data.volume);
+            priceLevelBuckets[bucketIndex].first = DecimalFunctions::add(priceLevelBuckets[bucketIndex].first, data.volume);
         } else {
-            priceLevelBuckets[bucketIndex].second = add(priceLevelBuckets[bucketIndex].second, data.volume);
+            priceLevelBuckets[bucketIndex].second = DecimalFunctions::add(priceLevelBuckets[bucketIndex].second, data.volume);
         }
     }
 
@@ -266,8 +277,8 @@ void RealTimeData::aggregateMinuteData() {
         double midPrice = minPrice + (i + 0.5) * interval;
         json level = {
             {"Price", midPrice},
-            {"BuyVolume", decimalToString(priceLevelBuckets[i].first)},
-            {"SellVolume", decimalToString(priceLevelBuckets[i].second)}
+            {"BuyVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].first)},
+            {"SellVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].second)}
         };
         l2DataJson.push_back(level);
     }
@@ -296,13 +307,13 @@ void RealTimeData::aggregateMinuteData() {
         {"High", high},
         {"Low", low},
         {"Close", close},
-        {"Volume", decimalToString(volume)}
+        {"Volume", DecimalFunctions::decimalToString(volume)}
     };
 
     json featureDataJson = {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
-        {"DepthChange", decimalToString(depthChange)},
+        {"DepthChange", DecimalFunctions::decimalToString(depthChange)},
         {"ImpliedLiquidity", impliedLiquidity},
         {"PriceMomentum", priceMomentum},
         {"TradeDensity", tradeDensity},
@@ -312,7 +323,7 @@ void RealTimeData::aggregateMinuteData() {
     };
 
     // 写入数据库
-    if (timescaleDB->insertRealTimeData(datetime, l1DataJson, l2DataJson, featureDataJson)) {
+    if (db->insertRealTimeData(datetime, l1DataJson, l2DataJson, featureDataJson)) {
         STX_LOGI(logger, "Combined data written to db successfully: " + datetime);
     } else {
         STX_LOGE(logger, "Combined data write to db failed: " + datetime);
@@ -345,10 +356,10 @@ double RealTimeData::calculateWeightedAveragePrice() {
     Decimal totalWeightedPrice = 0;
     Decimal totalVolume = 0;
     for (size_t i = 0; i < l1Prices.size(); ++i) {
-        totalWeightedPrice = add(totalWeightedPrice, mul(doubleToDecimal(l1Prices[i]), l1Volumes[i]));
-        totalVolume = add(totalVolume, l1Volumes[i]);
+        totalWeightedPrice = DecimalFunctions::add(totalWeightedPrice, DecimalFunctions::mul(DecimalFunctions::doubleToDecimal(l1Prices[i]), l1Volumes[i]));
+        totalVolume = DecimalFunctions::add(totalVolume, l1Volumes[i]);
     }
-    return totalVolume == 0 ? 0.0 : decimalToDouble(div(totalWeightedPrice, totalVolume));
+    return totalVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalWeightedPrice, totalVolume));
 }
 
 double RealTimeData::calculateBuySellRatio() {
@@ -356,12 +367,12 @@ double RealTimeData::calculateBuySellRatio() {
     Decimal totalSellVolume = 0;
     for (const auto& level : rawL2Data) {
         if (level.side == "Buy") {
-            totalBuyVolume = add(totalBuyVolume, level.volume);
+            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
         } else {
-            totalSellVolume = add(totalSellVolume, level.volume);
+            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
         }
     }
-    return totalSellVolume == 0 ? 0.0 : decimalToDouble(div(totalBuyVolume, totalSellVolume));
+    return totalSellVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalBuyVolume, totalSellVolume));
 }
 
 Decimal RealTimeData::calculateDepthChange() {
@@ -370,13 +381,13 @@ Decimal RealTimeData::calculateDepthChange() {
 
     for (const auto& level : rawL2Data) {
         if (level.side == "Buy") {
-            totalBuyVolume = add(totalBuyVolume, level.volume);
+            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
         } else if (level.side == "Sell") {
-            totalSellVolume = add(totalSellVolume, level.volume);
+            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
         }
     }
 
-    return sub(totalBuyVolume, totalSellVolume);
+    return DecimalFunctions::sub(totalBuyVolume, totalSellVolume);
 }
 
 double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) {

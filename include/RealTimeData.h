@@ -67,6 +67,8 @@ public:
     void start();
     void stop();
 
+    inline const bool isConnected() const {return connected;}
+
 private:
     struct L2DataPoint {
         double price;
@@ -74,12 +76,12 @@ private:
         std::string side; // "Buy" or "Sell"
     };
 
+
+    std::shared_ptr<Logger> logger;
+    std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
     std::unique_ptr<EReader> reader;
-    std::shared_ptr<Logger> logger;
-    std::shared_ptr<TimescaleDB> timescaleDB;
-
     OrderId nextOrderId;
     int requestId;
     double yesterdayClose;
