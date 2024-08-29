@@ -59,9 +59,11 @@
 #include "EReader.h"
 #include "EReaderOSSignal.h"
 
+using json = nlohmann::json;
+
 class RealTimeData : public EWrapper {
 public:
-    RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& db);
+    RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
     ~RealTimeData();
 
     void start();
@@ -76,7 +78,6 @@ private:
         std::string side; // "Buy" or "Sell"
     };
 
-
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<EReaderOSSignal> osSignal;
@@ -85,21 +86,27 @@ private:
     OrderId nextOrderId;
     int requestId;
     double yesterdayClose;
-    bool running;
+    std::atomic<bool> running;
     Decimal previousVolume;
+    std::atomic<bool> connected;
 
     std::thread readerThread;
     std::thread processDataThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
-    std::vector<L2DataPoint> rawL2Data; // 存储原始的L2数据
+    std::vector<L2DataPoint> rawL2Data;
 
     boost::interprocess::shared_memory_object shm;
     boost::interprocess::mapped_region region;
     std::mutex dataMutex;
     std::mutex clientMutex;
-    bool connected;
+
+    static constexpr const char* IB_HOST = "127.0.0.1";
+    static constexpr int IB_PORT = 7496;
+    static constexpr int IB_CLIENT_ID = 0;
+    static constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
+    static constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
     bool connectToIB();
     void reconnect();
@@ -107,6 +114,14 @@ private:
     void aggregateMinuteData();
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
+
+    json aggregateL1Data();
+    json aggregateL2Data();
+    json calculateFeatures(const json& l1Data, const json& l2Data);
+    std::string getCurrentDateTime();
+    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    void clearTemporaryData();
 
     // 计算指标的方法
     double calculateWeightedAveragePrice();

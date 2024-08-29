@@ -25,6 +25,7 @@
 #include <iostream>
 #include <filesystem>
 #include <memory>
+#include <atomic>
 
 #include "RealTimeData.h"
 #include "DailyDataFetcher.h"
@@ -36,26 +37,26 @@ std::atomic<bool> running(true);
 
 void signalHandler(int signum) {
     std::cout << "\nInterrupt signal (" << signum << ") received.\n";
-    running = false;
+    running.store(false);
 }
 
-bool isMarketOpenTime() {
-    std::time_t t = std::time(nullptr);
-    std::tm *utc_tm = std::gmtime(&t);
+bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
+    auto now = std::chrono::system_clock::now();
+    auto utc_time = std::chrono::system_clock::to_time_t(now);
+    
+    std::tm ny_time{};
+    setenv("TZ", "America/New_York", 1);
+    tzset();
+    localtime_r(&utc_time, &ny_time);
 
-    utc_tm->tm_hour -= 5;
-    std::time_t localTime = std::mktime(utc_tm);
+    bool open = (ny_time.tm_hour > 9 && ny_time.tm_hour < 16) || (ny_time.tm_hour == 9 && ny_time.tm_min >= 30);
+    bool weekend = (ny_time.tm_wday == 0 || ny_time.tm_wday == 6);
 
-    std::tm *ny_tm = std::localtime(&localTime);
-    if (ny_tm->tm_isdst > 0) {
-        ny_tm->tm_hour += 1;
-    }
+    std::ostringstream oss;
+    oss << std::put_time(&ny_time, "%Y-%m-%d %H:%M:%S");
+    std::string datetime = oss.str();
 
-    // Market open from 9:30 to 16:00 New York time
-    bool open = (ny_tm->tm_hour > 9 && ny_tm->tm_hour < 16) || (ny_tm->tm_hour == 9 && ny_tm->tm_min >= 30);
-
-    // Check if it's a weekend
-    bool weekend = (ny_tm->tm_wday == 0 || ny_tm->tm_wday == 6);
+    STX_LOGW(logger, "Current New York Time: " + datetime);
 
     return open && !weekend;
 }
@@ -68,20 +69,22 @@ int main() {
         std::filesystem::create_directory(logDir);
     }
 
-    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
+    auto now = std::chrono::system_clock::now();
+    auto in_time_t = std::chrono::system_clock::to_time_t(now);
     std::ostringstream oss;
     oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d-%H:%M:%S");
     std::string timestamp = oss.str();
 
     std::string logFilePath = "logs/OpenSTX_" + timestamp + ".log";
-    std::shared_ptr<Logger> logger = std::make_shared<Logger>(logFilePath);
+    auto logger = std::make_shared<Logger>(logFilePath);
     STX_LOGI(logger, "Start main");
 
-    // Initialize TimescaleDB
-    std::string configFilePath = "conf/alicloud_db.ini";
     std::shared_ptr<TimescaleDB> timescaleDB;
+    std::shared_ptr<RealTimeData> dataCollector;
+    std::shared_ptr<DailyDataFetcher> historicalDataFetcher;
+
     try {
+        std::string configFilePath = "conf/alicloud_db.ini";
         DBConfig config = loadConfig(configFilePath, logger);
         timescaleDB = std::make_shared<TimescaleDB>(
             logger, 
@@ -91,76 +94,64 @@ int main() {
             config.host, 
             config.port
         );
-    } catch (const std::exception& e) {
-        STX_LOGE(logger, "Failed to initialize TimescaleDB: " + std::string(e.what()));
-        return 1;
-    }
 
-    // Initialize RealTimeData
-    std::shared_ptr<RealTimeData> dataCollector;
-    try {
         dataCollector = std::make_shared<RealTimeData>(logger, timescaleDB);
         STX_LOGI(logger, "Successfully initialized RealTimeData.");
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Failed to initialize RealTimeData: " + std::string(e.what()));
-        return 1;
-    }
 
-    // Initialize DailyDataFetcher
-    std::shared_ptr<DailyDataFetcher> historicalDataFetcher;
-    try {
         historicalDataFetcher = std::make_shared<DailyDataFetcher>(logger, timescaleDB);
         STX_LOGI(logger, "Successfully initialized DailyDataFetcher.");
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Failed to initialize DailyDataFetcher: " + std::string(e.what()));
+    } catch (const std::exception& e) {
+        STX_LOGE(logger, "Initialization failed: " + std::string(e.what()));
         return 1;
     }
 
-    // RealTimeData management thread
     std::thread realTimeDataThread([&]() {
-        while (running) {
+        while (running.load()) {
             try {
-                // Start data collection shortly before market opens
-                while (!isMarketOpenTime()) {
+                while (!isMarketOpenTime(logger) && running.load()) {
                     std::this_thread::sleep_for(std::chrono::minutes(1));
                 }
+                if (!running.load()) break;
                 STX_LOGI(logger, "Market opening soon, starting RealTimeData collection.");
                 dataCollector->start();
 
-                // Stop data collection shortly after market closes
-                while (isMarketOpenTime()) {
+                while (isMarketOpenTime(logger) && running.load()) {
                     std::this_thread::sleep_for(std::chrono::minutes(1));
                 }
                 STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
                 dataCollector->stop();
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception in RealTimeData management thread: " + std::string(e.what()));
-                running = false;
+                STX_LOGE(logger, "Exception caught: " + std::string(e.what()));
+                std::this_thread::sleep_for(std::chrono::minutes(5));
+                // Attempt to reconnect or reinitialize the problematic component
             }
         }
     });
 
-    // Historical data fetching thread
     std::thread historicalDataThread([&]() {
-        std::this_thread::sleep_for(std::chrono::seconds(30)); // Wait for initial RealTimeData connection to stabilize
-        while (running) {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        while (running.load()) {
             try {
-                if (!isMarketOpenTime()) {
+                if (!isMarketOpenTime(logger)) {
                     historicalDataFetcher->fetchAndProcessDailyData("SPY", "3 Y", true);
                     STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
-                    std::this_thread::sleep_for(std::chrono::hours(1));
+                    for (int i = 0; i < 60 && running.load(); ++i) {
+                        std::this_thread::sleep_for(std::chrono::minutes(1));
+                    }
                 } else {
                     STX_LOGI(logger, "Market is open. Historical data fetch paused.");
-                    std::this_thread::sleep_for(std::chrono::hours(1));
+                    for (int i = 0; i < 60 && running.load(); ++i) {
+                        std::this_thread::sleep_for(std::chrono::minutes(1));
+                    }
                 }
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception in DailyDataFetcher thread: " + std::string(e.what()));
+                STX_LOGE(logger, "Exception caught: " + std::string(e.what()));
+                std::this_thread::sleep_for(std::chrono::minutes(5));
             }
         }
     });
 
-    // Main loop waiting for termination signal
-    while (running) {
+    while (running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 

@@ -23,10 +23,16 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
-#include "nlohmann/json.hpp"
+#include <boost/circular_buffer.hpp>
 #include "RealTimeData.h"
 
 using json = nlohmann::json;
+
+constexpr const char* IB_HOST = "127.0.0.1";
+constexpr int IB_PORT = 7496;
+constexpr int IB_CLIENT_ID = 0;
+constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
+constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db)
     : logger(log), db(_db), 
@@ -59,31 +65,25 @@ bool RealTimeData::connectToIB() {
             throw std::runtime_error("Failed to create EClientSocket");
         }
 
-        const char *host = "127.0.0.1";
-        int port = 7496;
-        int clientId = 0;
-
-        if (client->eConnect(host, port, clientId)) {
-            STX_LOGI(logger, "Connected to IB TWS.");
-
-            reader = std::make_unique<EReader>(client.get(), osSignal.get());
-            reader->start();
-
-            readerThread = std::thread([this]() {
-                while (client->isConnected()) {
-                    osSignal->waitForSignal();
-                    std::lock_guard<std::mutex> lock(clientMutex);
-                    reader->processMsgs();
-                }
-            });
-
-            connected = true;
-            return true;
-        } else {
-            STX_LOGE(logger, "Failed to connect to IB TWS.");
-            stop(); // 在连接失败时确保停止并清理资源
-            return false;
+        if (!client->eConnect(IB_HOST, IB_PORT, IB_CLIENT_ID, false)) {
+            throw std::runtime_error("Failed to connect to IB TWS");
         }
+
+        STX_LOGI(logger, "Connected to IB TWS.");
+
+        reader = std::make_unique<EReader>(client.get(), osSignal.get());
+        reader->start();
+
+        readerThread = std::thread([this]() {
+            while (client->isConnected()) {
+                osSignal->waitForSignal();
+                std::lock_guard<std::mutex> lock(clientMutex);
+                reader->processMsgs();
+            }
+        });
+
+        connected = true;
+        return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
         stop();
@@ -110,10 +110,10 @@ void RealTimeData::start() {
     running = true;
 
     try {
-        boost::interprocess::shared_memory_object::remove("RealTimeData");
+        boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
 
-        shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, "RealTimeData", boost::interprocess::read_write);
-        shm.truncate(4096);
+        shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, SHARED_MEMORY_NAME, boost::interprocess::read_write);
+        shm.truncate(SHARED_MEMORY_SIZE);
         region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
         STX_LOGI(logger, "Shared memory RealTimeData created successfully.");
 
@@ -154,7 +154,7 @@ void RealTimeData::stop() {
         STX_LOGI(logger, "readerThread joined successfully");
     }
 
-    boost::interprocess::shared_memory_object::remove("RealTimeData");
+    boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
 
     {
         std::lock_guard<std::mutex> lock(clientMutex);
@@ -227,14 +227,33 @@ void RealTimeData::processL2Data(int position, double price, Decimal size, int s
 }
 
 void RealTimeData::aggregateMinuteData() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+
     if (l1Prices.empty() || rawL2Data.empty()) {
-        STX_LOGE(logger, "Empty data.");
+        STX_LOGE(logger, "Empty data. Skipping aggregation.");
         return;
     }
 
-    std::lock_guard<std::mutex> lock(dataMutex);
+    try {
+        auto l1Data = aggregateL1Data();
+        auto l2Data = aggregateL2Data();
+        auto features = calculateFeatures(l1Data, l2Data);
 
-    // 聚合 L1 数据
+        std::string datetime = getCurrentDateTime();
+
+        if (!writeToDatabase(datetime, l1Data, l2Data, features)) {
+            throw std::runtime_error("Failed to write data to database");
+        }
+
+        writeToSharedMemory(createCombinedJson(datetime, l1Data, l2Data, features));
+
+        clearTemporaryData();
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error in aggregateMinuteData: " + std::string(e.what()));
+    }
+}
+
+json RealTimeData::aggregateL1Data() {
     double open = l1Prices.front();
     double close = l1Prices.back();
     double high = *std::max_element(l1Prices.begin(), l1Prices.end());
@@ -242,7 +261,16 @@ void RealTimeData::aggregateMinuteData() {
     Decimal volume = DecimalFunctions::sub(l1Volumes.back(), previousVolume);
     previousVolume = l1Volumes.back();
 
-    // 计算 L2 数据的动态区间
+    return {
+        {"Open", open},
+        {"High", high},
+        {"Low", low},
+        {"Close", close},
+        {"Volume", DecimalFunctions::decimalToString(volume)}
+    };
+}
+
+json RealTimeData::aggregateL2Data() {
     double minPrice = std::numeric_limits<double>::max();
     double maxPrice = std::numeric_limits<double>::lowest();
 
@@ -254,12 +282,11 @@ void RealTimeData::aggregateMinuteData() {
     double interval = (maxPrice - minPrice) / 20;
     if (interval == 0.0) {
         STX_LOGE(logger, "Interval calculation failed due to identical min and max prices.");
-        return;
+        return json::array();
     }
 
     json l2DataJson = json::array();
 
-    // 初始化区间
     std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
     for (const auto& data : rawL2Data) {
@@ -283,34 +310,22 @@ void RealTimeData::aggregateMinuteData() {
         l2DataJson.push_back(level);
     }
 
-    // 计算金融指标
+    return l2DataJson;
+}
+
+json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
     double weightedAvgPrice = calculateWeightedAveragePrice();
     double buySellRatio = calculateBuySellRatio();
     Decimal depthChange = calculateDepthChange();
-    double impliedLiquidity = calculateImpliedLiquidity(volume, l2DataJson.size());
+    Decimal volume = DecimalFunctions::stringToDecimal(l1Data["Volume"].get<std::string>());
+    double impliedLiquidity = calculateImpliedLiquidity(volume, l2Data.size());
     double priceMomentum = calculatePriceMomentum();
     double tradeDensity = calculateTradeDensity();
     double rsi = calculateRSI();
     double macd = calculateMACD();
     double vwap = calculateVWAP();
 
-    // 获取当前时间并格式化
-    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
-    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
-    std::ostringstream oss;
-    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
-    std::string datetime = oss.str();
-
-    // 构建 JSON 数据
-    json l1DataJson = {
-        {"Open", open},
-        {"High", high},
-        {"Low", low},
-        {"Close", close},
-        {"Volume", DecimalFunctions::decimalToString(volume)}
-    };
-
-    json featureDataJson = {
+    return {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
         {"DepthChange", DecimalFunctions::decimalToString(depthChange)},
@@ -321,34 +336,48 @@ void RealTimeData::aggregateMinuteData() {
         {"MACD", macd},
         {"VWAP", vwap}
     };
+}
 
-    // 写入数据库
-    if (db->insertRealTimeData(datetime, l1DataJson, l2DataJson, featureDataJson)) {
-        STX_LOGI(logger, "Combined data written to db successfully: " + datetime);
-    } else {
-        STX_LOGE(logger, "Combined data write to db failed: " + datetime);
-    }
+std::string RealTimeData::getCurrentDateTime() {
+    std::chrono::system_clock::time_point now = std::chrono::system_clock::now();
+    std::time_t in_time_t = std::chrono::system_clock::to_time_t(now);
+    std::ostringstream oss;
+    oss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
 
-    // 写入共享内存
-    json combinedData = {
-        {"datetime", datetime},
-        {"L1", l1DataJson},
-        {"L2", l2DataJson},
-        {"Features", featureDataJson}
-    };
-    writeToSharedMemory(combinedData.dump());
-
-    // 清空临时数据
-    l1Prices.clear();
-    l1Volumes.clear();
-    rawL2Data.clear();
+bool RealTimeData::writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) {
+    return db->insertRealTimeData(datetime, l1Data, l2Data, features);
 }
 
 void RealTimeData::writeToSharedMemory(const std::string &data) {
     std::lock_guard<std::mutex> lock(dataMutex);
-    std::memset(region.get_address(), 0, region.get_size());
-    std::memcpy(region.get_address(), data.c_str(), data.size());
-    STX_LOGI(logger, "Data written to shared memory");
+    try {
+        if (data.size() > region.get_size()) {
+            throw std::runtime_error("Data size exceeds shared memory size");
+        }
+        std::memset(region.get_address(), 0, region.get_size());
+        std::memcpy(region.get_address(), data.c_str(), data.size());
+        STX_LOGI(logger, "Data written to shared memory");
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error writing to shared memory: " + std::string(e.what()));
+    }
+}
+
+std::string RealTimeData::createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) {
+    json combinedData = {
+        {"datetime", datetime},
+        {"L1", l1Data},
+        {"L2", l2Data},
+        {"Features", features}
+    };
+    return combinedData.dump();
+}
+
+void RealTimeData::clearTemporaryData() {
+    l1Prices.clear();
+    l1Volumes.clear();
+    rawL2Data.clear();
 }
 
 // 各种指标计算的具体实现
@@ -390,8 +419,8 @@ Decimal RealTimeData::calculateDepthChange() {
     return DecimalFunctions::sub(totalBuyVolume, totalSellVolume);
 }
 
-double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) {
-    return totalL2Volume / (priceLevelCount + 1e-6);  // 防止除零
+double RealTimeData::calculateImpliedLiquidity(const Decimal& totalL2Volume, size_t priceLevelCount) {
+    return DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalL2Volume, DecimalFunctions::doubleToDecimal(priceLevelCount + 1e-6)));
 }
 
 double RealTimeData::calculatePriceMomentum() {
@@ -494,21 +523,22 @@ void RealTimeData::error(int id, int errorCode, const std::string &errorString, 
 void RealTimeData::reconnect() {
     STX_LOGI(logger, "Attempting to reconnect to IB TWS...");
 
-    // 停止当前连接
     stop();
 
-    // 尝试重新连接
     int attempts = 0;
     const int max_attempts = 5;
+    const int base_delay = 1;
+
     while (attempts < max_attempts) {
         if (connectToIB()) {
             STX_LOGI(logger, "Reconnected to IB TWS successfully.");
             return;
         } else {
-            STX_LOGE(logger, "Reconnection attempt " + std::to_string(attempts + 1) + " failed.");
+            int delay = base_delay * std::pow(2, attempts);
+            STX_LOGE(logger, "Reconnection attempt " + std::to_string(attempts + 1) + " failed. Retrying in " + std::to_string(delay) + " seconds.");
         }
         ++attempts;
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(delay));
     }
 
     STX_LOGE(logger, "Failed to reconnect to IB TWS after " + std::to_string(max_attempts) + " attempts.");

@@ -36,6 +36,7 @@
 #include "EReaderOSSignal.h"
 #include "EClientSocket.h"
 #include "EReader.h"
+#include <atomic>
 
 class DailyDataFetcher : public EWrapper {
 public:
@@ -56,28 +57,40 @@ private:
     bool running;
     bool dataReceived;
     int nextRequestId;
+    std::atomic<bool> shouldRun;
+    int m_nextValidId = 0;
 
     std::mutex clientMutex;
     std::mutex cvMutex;
     std::condition_variable cv;
     std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
+    std::thread connectionThread;
+
+    std::mutex nextValidIdMutex;
+    std::condition_variable nextValidIdCV;
+
+    static constexpr const char* IB_HOST = "127.0.0.1";
+    static constexpr int IB_PORT = 7496;
+    static constexpr int IB_CLIENT_ID = 2;
 
 private:
     bool connectToIB();
-    void waitForData();
-    void parseDateString(const std::string& dateStr, std::tm& timeStruct);
-    void requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
+    bool waitForData(); 
+    void maintainConnection();
+    bool requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);
+    bool requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
     std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
     std::string calculateStartDateFromDuration(const std::string& duration);
     std::string getCurrentDate();
     void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
+    int calculateDurationInDays(const std::string& startDate, const std::string& endDate);
 
-    double calculateSMA(const std::string& symbol, double close);
-    double calculateEMA(const std::string& symbol, double close);
-    double calculateRSI(const std::string& symbol, double close);
+    double calculateSMA(const std::string& symbol, double close, int period = 20);
+    double calculateEMA(const std::string& symbol, double close, int period = 20);
+    double calculateRSI(const std::string& symbol, double close, int period = 14);
     double calculateMACD(const std::string& symbol, double close);
     double calculateVWAP(const std::string& symbol, double volume, double close);
-    double calculateMomentum(const std::string& symbol, double close);
+    double calculateMomentum(const std::string& symbol, double close, int period = 10);
 
     void historicalData(TickerId reqId, const Bar& bar) override;
     void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
