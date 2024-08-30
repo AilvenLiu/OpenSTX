@@ -49,7 +49,7 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     tzset();
     localtime_r(&utc_time, &ny_time);
 
-    bool open = (ny_time.tm_hour > 9 && ny_time.tm_hour < 16) || (ny_time.tm_hour == 9 && ny_time.tm_min >= 30);
+    bool open = (ny_time.tm_hour > 9 && ny_time.tm_hour < 16) || (ny_time.tm_hour == 9 && ny_time.tm_min >= 25);
     bool weekend = (ny_time.tm_wday == 0 || ny_time.tm_wday == 6);
 
     std::ostringstream oss;
@@ -108,22 +108,39 @@ int main() {
     std::thread realTimeDataThread([&]() {
         while (running.load()) {
             try {
+                // Wait for market to open
                 while (!isMarketOpenTime(logger) && running.load()) {
                     std::this_thread::sleep_for(std::chrono::minutes(1));
                 }
-                if (!running.load()) break;
-                STX_LOGI(logger, "Market opening soon, starting RealTimeData collection.");
+
+                if (!running.load()) continue;
+
+                STX_LOGI(logger, "Market opening, starting RealTimeData collection.");
+                
                 dataCollector->start();
 
-                while (isMarketOpenTime(logger) && running.load()) {
-                    std::this_thread::sleep_for(std::chrono::minutes(1));
+                if (dataCollector->isConnected()) {
+                    STX_LOGI(logger, "RealTimeData collection active during market hours.");
+                    
+                    // Collect data while market is open
+                    while (isMarketOpenTime(logger) && running.load()) {
+                        // Here you might want to add any periodic checks or operations
+                        std::this_thread::sleep_for(std::chrono::seconds(10));
+                    }
+
+                    STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
+                } else {
+                    STX_LOGE(logger, "Failed to start RealTimeData collection.");
                 }
-                STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
+
                 dataCollector->stop();
+
+                // Wait a bit before checking market status again
+                std::this_thread::sleep_for(std::chrono::minutes(1));
+
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception caught: " + std::string(e.what()));
-                std::this_thread::sleep_for(std::chrono::minutes(5));
-                // Attempt to reconnect or reinitialize the problematic component
+                STX_LOGE(logger, "Exception caught in realTimeDataThread: " + std::string(e.what()));
+                std::this_thread::sleep_for(std::chrono::minutes(1));
             }
         }
     });
@@ -145,7 +162,7 @@ int main() {
                     }
                 }
             } catch (const std::exception &e) {
-                STX_LOGE(logger, "Exception caught: " + std::string(e.what()));
+                STX_LOGE(logger, "Exception caught in historicalDataThread: " + std::string(e.what()));
                 std::this_thread::sleep_for(std::chrono::minutes(5));
             }
         }

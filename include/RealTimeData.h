@@ -92,6 +92,7 @@ private:
 
     std::thread readerThread;
     std::thread processDataThread;
+    std::thread connectionCheckThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
@@ -101,6 +102,7 @@ private:
     boost::interprocess::mapped_region region;
     std::mutex dataMutex;
     std::mutex clientMutex;
+    std::mutex readerMutex;
 
     static constexpr const char* IB_HOST = "127.0.0.1";
     static constexpr int IB_PORT = 7496;
@@ -108,26 +110,29 @@ private:
     static constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
     static constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
-    bool connectToIB();
+    bool connectToIB(int maxRetries, int retryDelayMs);
     void reconnect();
-    void requestData();
+    void requestData(int maxRetries, int retryDelayMs);
     void aggregateMinuteData();
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
+    void handleConnectionError(int errorCode);
+    void handleRateLimitExceeded();
+    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
 
     json aggregateL1Data();
     json aggregateL2Data();
     json calculateFeatures(const json& l1Data, const json& l2Data);
-    std::string getCurrentDateTime();
+    std::string getCurrentDateTime() const;
     bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
-    std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
     void clearTemporaryData();
+    void checkDataHealth();
 
     // 计算指标的方法
     double calculateWeightedAveragePrice();
     double calculateBuySellRatio();
     Decimal calculateDepthChange();
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
     double calculatePriceMomentum();
     double calculateTradeDensity();
     double calculateRSI();
