@@ -1,5 +1,5 @@
 {
-    "cmake.sourceDirectory": "/Users/ailven.liu/proj/quant_trading/api",
+    "cmake.sourceDirectory": "/Users/ailven.liu/proj/OpenSTX",
     "files.associations": {
         "__bit_reference": "cpp",
         "__config": "cpp",
@@ -58,6 +58,12 @@
         "list": "cpp",
         "regex": "cpp",
         "source_location": "cpp",
-        "span": "cpp"
+        "span": "cpp",
+        "csignal": "cpp",
+        "condition_variable": "cpp",
+        "chrono": "cpp",
+        "any": "cpp",
+        "forward_list": "cpp",
+        "valarray": "cpp"
     }
 }

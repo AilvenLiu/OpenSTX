@@ -17,7 +17,7 @@
 #include "NewsProvider.h"
 #include "TickAttrib.h"
 #include "HistogramEntry.h"
-#include "bar.h"
+#include "Bar.h"
 #include "PriceIncrement.h"
 #include "HistoricalTick.h"
 #include "HistoricalTickBidAsk.h"
@@ -120,6 +120,8 @@ enum TickType { BID_SIZE, BID, ASK, ASK_SIZE, LAST, LAST_SIZE,
 				SOCIAL_MARKET_ANALYTICS,
 				ESTIMATED_IPO_MIDPOINT,
 				FINAL_IPO_LAST,
+	            DELAYED_YIELD_BID,
+	            DELAYED_YIELD_ASK,
 				NOT_SET };
 
 typedef std::map<int, std::tuple<std::string, char>> SmartComponentsMap;

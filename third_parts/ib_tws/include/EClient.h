@@ -1,4 +1,4 @@
-/* Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
+/* Copyright (C) 2024 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
  * and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable. */
 
 #pragma once
@@ -14,6 +14,7 @@
 #include "TagValue.h"
 #include "Contract.h"
 #include "WshEventData.h"
+#include "OrderCancel.h"
 
 namespace ibapi {
 namespace client_constants {
@@ -252,6 +253,7 @@ public:
 
 	const std::string& host() const { return m_host; }
 	int port() const { return m_port; }
+	void validateInvalidSymbols(const std::string& host);
 
 public:
 
@@ -274,7 +276,7 @@ public:
 		const std::string& genericTicks, bool snapshot, bool regulatorySnaphsot, const TagValueListSPtr& mktDataOptions);
 	void cancelMktData(TickerId id);
 	void placeOrder(OrderId id, const Contract& contract, const Order& order);
-	void cancelOrder(OrderId id, const std::string& manualOrderCancelTime);
+	void cancelOrder(OrderId id, const OrderCancel& orderCancel);
 	void reqOpenOrders();
 	void reqAccountUpdates(bool subscribe, const std::string& acctCode);
 	void reqExecutions(int reqId, const ExecutionFilter& filter);
@@ -296,7 +298,7 @@ public:
 		int useRTH, int formatDate, bool keepUpToDate, const TagValueListSPtr& chartOptions);
 	void exerciseOptions(TickerId tickerId, const Contract& contract,
 		int exerciseAction, int exerciseQuantity,
-		const std::string& account, int override);
+		const std::string& account, int override, const std::string& manualOrderTime, const std::string& customerAccount, bool professionalCustomer);
 	void cancelHistoricalData(TickerId tickerId );
 	void reqRealTimeBars(TickerId id, const Contract& contract, int barSize,
 		const std::string& whatToShow, bool useRTH, const TagValueListSPtr& realTimeBarsOptions);

@@ -1,0 +1,7 @@
+echo "BEGIN TESTS IN MACOSX..."
+rm readtest linuxout ../LIBRARY/libbid.a
+./linuxbuild > linuxout
+./check linuxout
+rm readtest linuxout ../LIBRARY/libbid.a
+echo "END TESTS IN MACOSX..."
+echo "THE TESTS PASSED IF NO FAILURES WERE REPORTED ABOVE"

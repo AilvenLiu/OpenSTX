@@ -12,18 +12,30 @@ echo "Current Direction: $PROJECT_DIR"
 if [ -d "$BUILD_DIR" ]; then
     echo "Removing old build directory..."
     rm -rf "$BUILD_DIR"
+    mkdir -p "$BUILD_DIR"
 fi
 
-# Create build directory
-echo "Creating build directory..."
-mkdir -p "$BUILD_DIR"
-cd "$BUILD_DIR"
+if [ -d "$BIN_DIR" ]; then
+    echo "Removing old  directory..."
+    rm -rf "$BIN_DIR"
+    mkdir -p "$BIN_DIR"
+fi
 
-# Run CMake to generate build files
+if [ ! -d "$LIB_DIR" ]; then
+    echo "[ERROR] lib path not exist: $LIB_DIR"
+    mkdir -p $LIB_DIR
+    exit 1
+fi
+
+if [ ! -f "$LIB_DIR/libbid.a" ]; then
+    echo "[ERROR] lib file not exist: $LIB_DIR/libbid.a"
+    echo "go to third_parts/IntelRDFPMathLib20U2 and run make.sh"
+    exit 1
+fi
+
+cd "$BUILD_DIR"
 echo "Running CMake..."
 cmake ..
-
-# Compile the project
 echo "Compiling the project..."
 make -j8
 

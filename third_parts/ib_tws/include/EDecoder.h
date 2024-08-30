@@ -1,4 +1,4 @@
-/* Copyright (C) 2019 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
+/* Copyright (C) 2024 Interactive Brokers LLC. All rights reserved. This code is subject to the terms
  * and conditions of the IB API Non-Commercial License or the IB API Commercial License, as applicable. */
 
 #pragma once
@@ -134,12 +134,23 @@ const int MIN_SERVER_VER_WSH_EVENT_DATA_FILTERS_DATE = 173;
 const int MIN_SERVER_VER_INSTRUMENT_TIMEZONE         = 174;
 const int MIN_SERVER_VER_HMDS_MARKET_DATA_IN_SHARES  = 175;
 const int MIN_SERVER_VER_BOND_ISSUERID               = 176;
+const int MIN_SERVER_VER_FA_PROFILE_DESUPPORT        = 177;
+const int MIN_SERVER_VER_PENDING_PRICE_REVISION      = 178;
+const int MIN_SERVER_VER_FUND_DATA_FIELDS            = 179;
+const int MIN_SERVER_VER_MANUAL_ORDER_TIME_EXERCISE_OPTIONS = 180;
+const int MIN_SERVER_VER_OPEN_ORDER_AD_STRATEGY      = 181;
+const int MIN_SERVER_VER_LAST_TRADE_DATE             = 182;
+const int MIN_SERVER_VER_CUSTOMER_ACCOUNT            = 183;
+const int MIN_SERVER_VER_PROFESSIONAL_CUSTOMER       = 184;
+const int MIN_SERVER_VER_BOND_ACCRUED_INTEREST       = 185;
+const int MIN_SERVER_VER_INELIGIBILITY_REASONS       = 186;
+const int MIN_SERVER_VER_RFQ_FIELDS                  = 187;
 
 /* 100+ messaging */
 // 100 = enhanced handshake, msg length prefixes
 
 const int MIN_CLIENT_VER = 100;
-const int MAX_CLIENT_VER = MIN_SERVER_VER_BOND_ISSUERID;
+const int MAX_CLIENT_VER = MIN_SERVER_VER_RFQ_FIELDS;
 
 
 // incoming msg id's
