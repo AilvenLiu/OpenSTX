@@ -26,7 +26,8 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
-#include "DailyDataFetcher.h"
+
+#include "DailyDataFetcher.hpp"
 
 constexpr const char* IB_HOST = "127.0.0.1";
 constexpr int IB_PORT = 7496;

@@ -27,7 +27,7 @@
 #include <iostream>
 #include <string>
 
-#include "Logger.h"
+#include "Logger.hpp"
 
 struct DBConfig {
     std::string host;

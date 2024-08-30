@@ -1,48 +1,63 @@
-# 设置最低 CMake 版本要求
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.10)
+project(RealTimeDataTester)
 
-# 设置项目名称
-project(TestIBConnect)
-
-# 设置 C++ 标准为 C++17
+# Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 添加包含目录 (包括第三方库的头文件)
-include_directories(
-    ${PROJECT_SOURCE_DIR}/../../third_parts/ib_tws/include
-    ${PROJECT_SOURCE_DIR}/../../include
+include_directories(${CMAKE_SOURCE_DIR}/../../third_parts/ib_tws/include)
+set(TWS_LIB "${CMAKE_SOURCE_DIR}/../../third_parts/ib_tws/lib/libib_tws.dylib")
+set(BID_LIB "${CMAKE_SOURCE_DIR}/../../third_parts/IntelRDFPMathLib20U2/lib/libbid.a")
+
+# Find Boost libraries
+find_package(Boost REQUIRED COMPONENTS system filesystem)
+
+# Verify Boost presence
+if(Boost_FOUND)
+    message(STATUS "Boost found: ${Boost_VERSION}")
+    message(STATUS "Boost include dirs: ${Boost_INCLUDE_DIRS}")
+    message(STATUS "Boost libraries: ${Boost_LIBRARIES}")
+else()
+    message(FATAL_ERROR "Boost not found!")
+endif()
+
+# Specify the architecture for M1
+if (APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    message(STATUS "Building for Apple Silicon (arm64)")
+    set(CMAKE_OSX_ARCHITECTURES "arm64")
+endif()
+
+# Add executable target for the tester
+add_executable(RealTimeDataTester 
+    RealTimeDataTester.cpp
 )
 
-# 添加源文件
-set(SOURCE_FILES
-    TestIBConnect.cpp
+# Link libraries to the executable
+target_link_libraries(RealTimeDataTester
+    ${TWS_LIB}               # Link TWS API library
+    ${Boost_LIBRARIES}       # Link Boost libraries
+    ${BID_LIB}               # Link IntelRDFPMathLib
+    pthread
 )
 
-# 查找 lib 库
-find_library(IB_LIB ib_tws HINTS ${PROJECT_SOURCE_DIR}/../../third_parts/ib_tws/lib)
-# find_library(PQXX_LIB pqxx HINTS ${PROJECT_SOURCE_DIR}/../../third_parts/ib_tws/lib)
-
-# 如果找不到 libpqxx 库，则给出错误信息
-# if (NOT PQXX_LIB)
-#     message(FATAL_ERROR "libpqxx library not found")
-# endif()
-
-# 查找 PostgreSQL 的安装路径，并包含其库和头文件
-# find_package(PostgreSQL REQUIRED)
-
-# 创建可执行文件
-add_executable(TestIBConnect ${SOURCE_FILES})
-
-# 链接 libpqxx 和 libpq 库
-target_link_libraries(TestIBConnect 
-    ${IB_LIB}
-    # ${PQXX_LIB} 
-    # PostgreSQL::PostgreSQL
+# Set output directory
+set_target_properties(RealTimeDataTester PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}"
 )
 
-# 设置可执行文件的输出目录
-set_target_properties(TestIBConnect PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin
+# Update RPATH settings
+if (APPLE)
+    set_target_properties(RealTimeDataTester PROPERTIES
+        BUILD_WITH_INSTALL_RPATH TRUE
+        INSTALL_RPATH "@executable_path;@executable_path/../../third_parts/ib_tws/lib"
+    )
+endif()
+
+# Add a custom command to copy the dylib to the output directory
+add_custom_command(TARGET RealTimeDataTester POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+    ${TWS_LIB}
+    ${CMAKE_SOURCE_DIR}/libib_tws.dylib
 )

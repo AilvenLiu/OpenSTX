@@ -1,53 +1,160 @@
+/**************************************************************************
+ * This file is part of the OpenSTX project.
+ *
+ * OpenSTX (Open Smart Trading eXpert) is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * OpenSTX is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with OpenSTX. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Author: Ailven.LIU
+ * Email: ailven.x.liu@gmail.com
+ * Date: 2024
+ *************************************************************************/
+
+#ifndef REALTIMEDATA_H
+#define REALTIMEDATA_H
+
 #include <iostream>
-#include <memory>
 #include <string>
-#include <thread>
+#include <vector>
+#include <sstream>
+#include <fstream>
 #include <chrono>
-#include <EClientSocket.h>
-#include <EWrapper.h>
+#include <thread>
+#include <ctime>
+#include <mutex>
+#include <memory>
+#include <iomanip>
+#include <atomic>
+#include <map>
+#include <set>
+#include <numeric>
+#include <boost/interprocess/shared_memory_object.hpp>
+#include <boost/interprocess/mapped_region.hpp>
 
-class IBClient : public EWrapper {
+// Include necessary headers for IB API types
+#include "EClientSocket.h"
+#include "EWrapper.h"
+#include "Decimal.h"
+#include "FamilyCode.h"
+#include "PriceIncrement.h"
+#include "HistoricalSession.h"
+#include "SoftDollarTier.h"
+#include "NewsProvider.h"
+#include "DepthMktDataDescription.h"
+#include "HistoricalTick.h"
+#include "HistoricalTickBidAsk.h"
+#include "HistoricalTickLast.h"
+#include "EReader.h"
+#include "EReaderOSSignal.h"
+
+#include "nlohmann/json.hpp"
+#include "Logger.hpp"
+#include "TimescaleDB.hpp"
+
+using json = nlohmann::json;
+
+class RealTimeData : public EWrapper {
 public:
-    IBClient() : client(std::make_shared<EClientSocket>(this, nullptr)) {}
+    RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
+    ~RealTimeData();
 
-    void connect(const std::string& host, int port, int clientId) {
-    std::cout << "Attempting to create EClientSocket object." << std::endl;
+    void start();
+    void stop();
 
-    if (!client) {
-        std::cerr << "EClientSocket object is null after creation." << std::endl;
-        return;
-    }
-
-    std::cout << "EClientSocket object created. Attempting to connect to " << host << ":" << port << " with clientId " << clientId << std::endl;
-
-    try {
-        if (client->eConnect(host.c_str(), port, clientId)) {
-            std::cout << "Connected to IB TWS" << std::endl;
-        } else {
-            std::cerr << "Failed to connect to IB TWS" << std::endl;
-        }
-    } catch (const std::exception &e) {
-        std::cerr << "Exception during eConnect: " << e.what() << std::endl;
-    }
-}
-
-    void disconnect() {
-        if (client->isConnected()) {
-            client->eDisconnect();
-            std::cout << "Disconnected from IB TWS" << std::endl;
-        }
-    }
+    inline const bool isConnected() const {return connected;}
 
 private:
-    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
-    
-    // EWrapper interface methods
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override {};
-    void tickSize(TickerId tickerId, TickType field, Decimal size) override {};
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {};
-    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override {};
-    void nextValidId(OrderId orderId) override {};
+    struct L2DataPoint {
+        double price;
+        Decimal volume;
+        std::string side; // "Buy" or "Sell"
+        
+        L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
+    };
 
+    std::shared_ptr<Logger> logger;
+    std::shared_ptr<TimescaleDB> db;
+    std::unique_ptr<EReaderOSSignal> osSignal;
+    std::unique_ptr<EClientSocket> client;
+    std::unique_ptr<EReader> reader;
+    OrderId nextOrderId;
+    int requestId;
+    double yesterdayClose;
+    std::atomic<bool> running;
+    Decimal previousVolume;
+    std::atomic<bool> connected;
+
+    std::thread readerThread;
+    std::thread processDataThread;
+    std::thread connectionCheckThread;
+
+    std::vector<double> l1Prices;
+    std::vector<Decimal> l1Volumes;
+    std::vector<L2DataPoint> rawL2Data;
+
+    boost::interprocess::shared_memory_object shm;
+    boost::interprocess::mapped_region region;
+    std::mutex dataMutex;
+    std::mutex clientMutex;
+    std::mutex readerMutex;
+
+    static constexpr const char* IB_HOST = "127.0.0.1";
+    static constexpr int IB_PORT = 7496;
+    static constexpr int IB_CLIENT_ID = 0;
+    static constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
+    static constexpr size_t SHARED_MEMORY_SIZE = 4096;
+
+    bool connectToIB(int maxRetries, int retryDelayMs);
+    void reconnect();
+    void requestData(int maxRetries, int retryDelayMs);
+    void requestMarketDepth();
+    void aggregateMinuteData();
+    void writeToSharedMemory(const std::string &data);
+    void processL2Data(int position, double price, Decimal size, int side);
+    void handleConnectionError(int errorCode);
+    void handleRateLimitExceeded();
+    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
+
+    json aggregateL1Data();
+    json aggregateL2Data();
+    json calculateFeatures(const json& l1Data, const json& l2Data);
+    std::string getCurrentDateTime() const;
+    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
+    void clearTemporaryData();
+    void checkDataHealth();
+
+    // 计算指标的方法
+    double calculateWeightedAveragePrice();
+    double calculateBuySellRatio();
+    Decimal calculateDepthChange();
+    double calculatePriceMomentum();
+    double calculateTradeDensity();
+    double calculateRSI();
+    double calculateMACD();
+    double calculateEMA(int period);
+    double calculateVWAP();
+
+    // EWrapper接口方法
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
+    void tickSize(TickerId tickerId, TickType field, Decimal size) override;
+    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
+    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
+    void nextValidId(OrderId orderId) override;
+
+    // Unused EWrapper methods, implement to avoid a pure virtual class
+    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
+
+private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
     void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
         double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
@@ -143,26 +250,6 @@ private:
     void wshEventData(int reqId, const std::string& dataJson) override {}
     void historicalSchedule(int reqId, const std::string& startDateTime, const std::string& endDateTime, const std::string& timeZone, const std::vector<HistoricalSession>& sessions) override {}
     void userInfo(int reqId, const std::string& whiteBrandingId) override {}
-
-private:
-    std::shared_ptr<EClientSocket> client;
 };
 
-int main() {
-    IBClient ibClient;
-
-    std::string host = "127.0.0.1";  // Your TWS host (localhost)
-    int port = 7496;                 // TWS port for live trading; for paper trading use 7497
-    int clientId = 99;                // Client ID (should be unique for each client)
-
-    // Attempt to connect to IB TWS
-    ibClient.connect(host, port, clientId);
-
-    // Keep the connection open for a few seconds to test stability
-    std::this_thread::sleep_for(std::chrono::seconds(5));
-
-    // Disconnect from IB TWS
-    ibClient.disconnect();
-
-    return 0;
-}
+#endif // REALTIMEDATA_H

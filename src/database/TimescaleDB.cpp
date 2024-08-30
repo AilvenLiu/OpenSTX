@@ -21,7 +21,7 @@
 
 #include <thread>
 #include "nlohmann/json.hpp"
-#include "TimescaleDB.h"
+#include "TimescaleDB.hpp"
 
 using json = nlohmann::json;
 

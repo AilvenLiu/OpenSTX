@@ -19,7 +19,7 @@
  * Date: 2024
  *************************************************************************/
 
-#include "Logger.h"
+#include "Logger.hpp"
 
 Logger::Logger(const std::string& filename, LogLevel level)
     : logLevel(level) {

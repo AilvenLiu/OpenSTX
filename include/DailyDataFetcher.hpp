@@ -19,139 +19,95 @@
  * Date: 2024
  *************************************************************************/
 
-#ifndef REALTIMEDATA_H
-#define REALTIMEDATA_H
+#ifndef DAILY_DATA_FERCHER_H
+#define DAILY_DATA_FERCHER_H
 
-#include <iostream>
-#include <string>
-#include <vector>
-#include <sstream>
-#include <fstream>
-#include <chrono>
-#include <thread>
-#include <ctime>
-#include <mutex>
 #include <memory>
-#include <iomanip>
-#include <atomic>
+#include <vector>
 #include <map>
-#include <set>
-#include <numeric>
-#include <boost/interprocess/shared_memory_object.hpp>
-#include <boost/interprocess/mapped_region.hpp>
-#include "nlohmann/json.hpp"
-#include "EClientSocket.h"
+#include <string>
+#include <variant>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
+
 #include "EWrapper.h"
-#include "Decimal.h"
-#include "Logger.h"
-#include "TimescaleDB.h"
-
-// Include necessary headers for IB API types
-#include "FamilyCode.h"
-#include "PriceIncrement.h"
-#include "HistoricalSession.h"
-#include "SoftDollarTier.h"
-#include "NewsProvider.h"
-#include "DepthMktDataDescription.h"
-#include "HistoricalTick.h"
-#include "HistoricalTickBidAsk.h"
-#include "HistoricalTickLast.h"
-#include "EReader.h"
 #include "EReaderOSSignal.h"
+#include "EClientSocket.h"
+#include "EReader.h"
 
-using json = nlohmann::json;
+#include "Logger.hpp"
+#include "TimescaleDB.hpp"
 
-class RealTimeData : public EWrapper {
+
+class DailyDataFetcher : public EWrapper {
 public:
-    RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
-    ~RealTimeData();
-
-    void start();
+    DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db);
+    ~DailyDataFetcher();
+    
     void stop();
-
-    inline const bool isConnected() const {return connected;}
+    void fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental);
+    inline const bool isConnected() const { return connected; }
 
 private:
-    struct L2DataPoint {
-        double price;
-        Decimal volume;
-        std::string side; // "Buy" or "Sell"
-    };
-
     std::shared_ptr<Logger> logger;
     std::shared_ptr<TimescaleDB> db;
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
     std::unique_ptr<EReader> reader;
-    OrderId nextOrderId;
-    int requestId;
-    double yesterdayClose;
-    std::atomic<bool> running;
-    Decimal previousVolume;
-    std::atomic<bool> connected;
+    bool connected;
+    bool running;
+    bool dataReceived;
+    int nextRequestId;
+    std::atomic<bool> shouldRun;
+    int m_nextValidId = 0;
 
-    std::thread readerThread;
-    std::thread processDataThread;
-    std::thread connectionCheckThread;
-
-    std::vector<double> l1Prices;
-    std::vector<Decimal> l1Volumes;
-    std::vector<L2DataPoint> rawL2Data;
-
-    boost::interprocess::shared_memory_object shm;
-    boost::interprocess::mapped_region region;
-    std::mutex dataMutex;
     std::mutex clientMutex;
-    std::mutex readerMutex;
+    std::mutex cvMutex;
+    std::condition_variable cv;
+    std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
+    std::thread connectionThread;
+
+    std::mutex nextValidIdMutex;
+    std::condition_variable nextValidIdCV;
 
     static constexpr const char* IB_HOST = "127.0.0.1";
     static constexpr int IB_PORT = 7496;
-    static constexpr int IB_CLIENT_ID = 0;
-    static constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
-    static constexpr size_t SHARED_MEMORY_SIZE = 4096;
+    static constexpr int IB_CLIENT_ID = 2;
 
-    bool connectToIB(int maxRetries, int retryDelayMs);
-    void reconnect();
-    void requestData(int maxRetries, int retryDelayMs);
-    void aggregateMinuteData();
-    void writeToSharedMemory(const std::string &data);
-    void processL2Data(int position, double price, Decimal size, int side);
-    void handleConnectionError(int errorCode);
-    void handleRateLimitExceeded();
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
+private:
+    bool connectToIB();
+    bool waitForData(); 
+    void maintainConnection();
+    bool requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);
+    bool requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
+    std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
+    std::string calculateStartDateFromDuration(const std::string& duration);
+    std::string getCurrentDate();
+    void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
+    int calculateDurationInDays(const std::string& startDate, const std::string& endDate);
 
-    json aggregateL1Data();
-    json aggregateL2Data();
-    json calculateFeatures(const json& l1Data, const json& l2Data);
-    std::string getCurrentDateTime() const;
-    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
-    std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
-    void clearTemporaryData();
-    void checkDataHealth();
+    double calculateSMA(const std::string& symbol, double close, int period = 20);
+    double calculateEMA(const std::string& symbol, double close, int period = 20);
+    double calculateRSI(const std::string& symbol, double close, int period = 14);
+    double calculateMACD(const std::string& symbol, double close);
+    double calculateVWAP(const std::string& symbol, double volume, double close);
+    double calculateMomentum(const std::string& symbol, double close, int period = 10);
 
-    // 计算指标的方法
-    double calculateWeightedAveragePrice();
-    double calculateBuySellRatio();
-    Decimal calculateDepthChange();
-    double calculatePriceMomentum();
-    double calculateTradeDensity();
-    double calculateRSI();
-    double calculateMACD();
-    double calculateEMA(int period);
-    double calculateVWAP();
-
-    // EWrapper接口方法
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
-    void tickSize(TickerId tickerId, TickType field, Decimal size) override;
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
+    void historicalData(TickerId reqId, const Bar& bar) override;
+    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
     void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
 
-    // Unused EWrapper methods, implement to avoid a pure virtual class
-    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
-
 private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
+    void contractDetails(int reqId, const ContractDetails &contractDetails) override {};
+    void contractDetailsEnd(int reqId) override {};
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override {};
+    void tickSize(TickerId tickerId, TickType field, Decimal size) override {};
+    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {};
+    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
     void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
         double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
@@ -172,16 +128,12 @@ private:
         double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
-    void contractDetails( int reqId, const ContractDetails& contractDetails) override {}
     void bondContractDetails( int reqId, const ContractDetails& contractDetails) override {}
-    void contractDetailsEnd( int reqId) override {}
     void execDetails( int reqId, const Contract& contract, const Execution& execution) override {}
     void execDetailsEnd( int reqId) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
     void managedAccounts( const std::string& accountsList) override {}
     void receiveFA(faDataType pFaDataType, const std::string& cxml) override {}
-    void historicalData(TickerId reqId, const Bar& bar) override {}
-    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override {}
     void scannerParameters(const std::string& xml) override {}
     void scannerData(int reqId, int rank, const ContractDetails& contractDetails,
         const std::string& distance, const std::string& benchmark, const std::string& projection,
@@ -248,4 +200,4 @@ private:
     void userInfo(int reqId, const std::string& whiteBrandingId) override {}
 };
 
-#endif // REALTIMEDATA_H
+#endif

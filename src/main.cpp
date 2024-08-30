@@ -27,11 +27,11 @@
 #include <memory>
 #include <atomic>
 
-#include "RealTimeData.h"
-#include "DailyDataFetcher.h"
-#include "TimescaleDB.h"
-#include "Logger.h"
-#include "Config.h"
+#include "RealTimeData.hpp"
+#include "DailyDataFetcher.hpp"
+#include "TimescaleDB.hpp"
+#include "Logger.hpp"
+#include "Config.hpp"
 
 std::atomic<bool> running(true);
 

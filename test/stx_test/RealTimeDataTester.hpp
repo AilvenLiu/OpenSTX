@@ -19,92 +19,67 @@
  * Date: 2024
  *************************************************************************/
 
-#ifndef DAILY_DATA_FERCHER_H
-#define DAILY_DATA_FERCHER_H
+#pragma once
 
 #include <memory>
-#include <vector>
-#include <map>
 #include <string>
-#include <variant>
 #include <thread>
+#include <vector>
 #include <mutex>
-#include <condition_variable>
-#include "Logger.h"
-#include "TimescaleDB.h"
 #include "EWrapper.h"
 #include "EReaderOSSignal.h"
 #include "EClientSocket.h"
 #include "EReader.h"
-#include <atomic>
+#include "Contract.h"
 
-class DailyDataFetcher : public EWrapper {
+class RealTimeDataTester : public EWrapper {
 public:
-    DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db);
-    ~DailyDataFetcher();
-    
+    RealTimeDataTester();
+    ~RealTimeDataTester();
+
+    void start();
     void stop();
-    void fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental);
-    inline const bool isConnected() const { return connected; }
 
 private:
-    std::shared_ptr<Logger> logger;
-    std::shared_ptr<TimescaleDB> db;
-    std::unique_ptr<EReaderOSSignal> osSignal;
-    std::unique_ptr<EClientSocket> client;
-    std::unique_ptr<EReader> reader;
-    bool connected;
-    bool running;
-    bool dataReceived;
-    int nextRequestId;
-    std::atomic<bool> shouldRun;
-    int m_nextValidId = 0;
+    std::unique_ptr<EReaderSignal> m_osSignal;
+    std::unique_ptr<EClientSocket> m_pClient;
+    std::unique_ptr<EReader> m_pReader;
+    bool m_running;
+    TickerId m_tickerId;
+    Contract m_contract;
+    std::thread m_readerThread;
+    std::thread m_healthCheckThread;
+    std::mutex m_mutex;
+    std::mutex m_readerMutex;
 
-    std::mutex clientMutex;
-    std::mutex cvMutex;
-    std::condition_variable cv;
-    std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
-    std::thread connectionThread;
-
-    std::mutex nextValidIdMutex;
-    std::condition_variable nextValidIdCV;
-
-    static constexpr const char* IB_HOST = "127.0.0.1";
-    static constexpr int IB_PORT = 7496;
-    static constexpr int IB_CLIENT_ID = 2;
+    std::vector<double> m_l1Prices;
+    std::vector<Decimal> m_l1Volumes;
+    std::vector<std::pair<double, Decimal>> m_l2Data;
+    std::shared_ptr<EClientSocket> client;
+    
+private:
+    bool connectToTWS();
+    void requestMarketData();
+    void requestMarketDepth();
+    void processMessages();
+    void logMessage(const std::string& message);
+    std::string getCurrentTimestamp();
+    void logAllTicks(TickerId tickerId, TickType field, double price, const TickAttrib& attrib);
+    void checkDataHealth();
+    
+    // EWrapper interface methods
+    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib& attrib) override;
+    void tickSize(TickerId tickerId, TickType field, Decimal size) override;
+    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
+    void error(int id, int errorCode, const std::string& errorString, const std::string& advancedOrderRejectJson) override;
+    void connectionClosed() override;
 
 private:
-    bool connectToIB();
-    bool waitForData(); 
-    void maintainConnection();
-    bool requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);
-    bool requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
-    std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
-    std::string calculateStartDateFromDuration(const std::string& duration);
-    std::string getCurrentDate();
-    void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
-    int calculateDurationInDays(const std::string& startDate, const std::string& endDate);
 
-    double calculateSMA(const std::string& symbol, double close, int period = 20);
-    double calculateEMA(const std::string& symbol, double close, int period = 20);
-    double calculateRSI(const std::string& symbol, double close, int period = 14);
-    double calculateMACD(const std::string& symbol, double close);
-    double calculateVWAP(const std::string& symbol, double volume, double close);
-    double calculateMomentum(const std::string& symbol, double close, int period = 10);
-
-    void historicalData(TickerId reqId, const Bar& bar) override;
-    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override;
-    void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
-    void nextValidId(OrderId orderId) override;
-
-private:
-    // Unused EWrapper methods, implement to avoid a pure virtual class
-    void contractDetails(int reqId, const ContractDetails &contractDetails) override {};
-    void contractDetailsEnd(int reqId) override {};
-    void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override {};
-    void tickSize(TickerId tickerId, TickType field, Decimal size) override {};
-    void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override {};
     void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
+    void nextValidId(OrderId orderId) override {};
+
+    // Unused EWrapper methods, implement to avoid a pure virtual class
     void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
         double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
@@ -117,7 +92,6 @@ private:
     void openOrder( OrderId orderId, const Contract&, const Order&, const OrderState&) override {}
     void openOrderEnd() override {}
     void winError( const std::string& str, int lastError) override {}
-    void connectionClosed() override {}
     void updateAccountValue(const std::string& key, const std::string& val,
     const std::string& currency, const std::string& accountName) override {}
     void updatePortfolio( const Contract& contract, Decimal position,
@@ -125,12 +99,16 @@ private:
         double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
+    void contractDetails( int reqId, const ContractDetails& contractDetails) override {}
     void bondContractDetails( int reqId, const ContractDetails& contractDetails) override {}
+    void contractDetailsEnd( int reqId) override {}
     void execDetails( int reqId, const Contract& contract, const Execution& execution) override {}
     void execDetailsEnd( int reqId) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
     void managedAccounts( const std::string& accountsList) override {}
     void receiveFA(faDataType pFaDataType, const std::string& cxml) override {}
+    void historicalData(TickerId reqId, const Bar& bar) override {}
+    void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override {}
     void scannerParameters(const std::string& xml) override {}
     void scannerData(int reqId, int rank, const ContractDetails& contractDetails,
         const std::string& distance, const std::string& benchmark, const std::string& projection,
@@ -196,5 +174,3 @@ private:
     void historicalSchedule(int reqId, const std::string& startDateTime, const std::string& endDateTime, const std::string& timeZone, const std::vector<HistoricalSession>& sessions) override {}
     void userInfo(int reqId, const std::string& whiteBrandingId) override {}
 };
-
-#endif
