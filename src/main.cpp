@@ -150,12 +150,9 @@ int main() {
         while (running.load()) {
             try {
                 if (!isMarketOpenTime(logger)) {
-                    STX_LOGI(logger, "Market is closed. Starting historical data fetch.");
-                    historicalDataFetcher->fetchAndProcessDailyData("ALL", "5 Y", false);
-                    STX_LOGI(logger, "Historical data fetch complete, sleeping until next market close.");
-                    
-                    // Sleep until the next market open
-                    while (!isMarketOpenTime(logger) && running.load()) {
+                    historicalDataFetcher->fetchAndProcessDailyData("ALL", "10 Y", true);
+                    STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
+                    for (int i = 0; i < 60 && running.load(); ++i) {
                         std::this_thread::sleep_for(std::chrono::minutes(1));
                     }
                 } else {

@@ -142,7 +142,7 @@ void TimescaleDB::createTables() {
                 macd DOUBLE PRECISION,
                 vwap DOUBLE PRECISION,
                 momentum DOUBLE PRECISION,
-                CONSTRAINT daily_data_pkey PRIMARY KEY (date, symbol)
+                PRIMARY KEY (date, symbol)
             );
         )");
 
@@ -206,17 +206,9 @@ bool TimescaleDB::insertOrUpdateDailyData(const std::string &date, const std::ma
                             txn.quote(std::get<double>(dailyData.at("vwap"))) + ", " +
                             txn.quote(std::get<double>(dailyData.at("momentum"))) + ") " +
                             "ON CONFLICT (date, symbol) DO UPDATE SET " +
-                            "open = EXCLUDED.open, " +
-                            "high = EXCLUDED.high, " +
-                            "low = EXCLUDED.low, " +
-                            "close = EXCLUDED.close, " +
-                            "volume = EXCLUDED.volume, " +
-                            "adj_close = EXCLUDED.adj_close, " +
-                            "sma = EXCLUDED.sma, " +
-                            "ema = EXCLUDED.ema, " +
-                            "rsi = EXCLUDED.rsi, " +
-                            "macd = EXCLUDED.macd, " +
-                            "vwap = EXCLUDED.vwap, " +
+                            "open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, close = EXCLUDED.close, " +
+                            "volume = EXCLUDED.volume, adj_close = EXCLUDED.adj_close, sma = EXCLUDED.sma, " +
+                            "ema = EXCLUDED.ema, rsi = EXCLUDED.rsi, macd = EXCLUDED.macd, vwap = EXCLUDED.vwap, " +
                             "momentum = EXCLUDED.momentum;";
 
         txn.exec(query);
@@ -242,6 +234,25 @@ const std::string TimescaleDB::getLastDailyEndDate(const std::string &symbol) {
         }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error retrieving the last daily end date: " + std::string(e.what()));
+    }
+
+    return ""; // Return empty string if no data is found or error occurs
+}
+
+const std::string TimescaleDB::getFirstDailyStartDate(const std::string &symbol) {
+    STX_LOGI(logger, "Retrieving the first daily start date for symbol: " + symbol);
+    try {
+        pqxx::work txn(*conn);
+        std::string query = "SELECT MIN(date) FROM daily_data WHERE symbol = " + txn.quote(symbol) + ";";
+        pqxx::result result = txn.exec(query);
+
+        if (!result.empty() && !result[0][0].is_null()) {
+            std::string firstDate = result[0][0].as<std::string>();
+            STX_LOGI(logger, "First daily start date for " + symbol + ": " + firstDate);
+            return firstDate;
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error retrieving the first daily start date: " + std::string(e.what()));
     }
 
     return ""; // Return empty string if no data is found or error occurs

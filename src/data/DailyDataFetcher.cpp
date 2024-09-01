@@ -141,9 +141,8 @@ void DailyDataFetcher::stop() {
 
 void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
     std::vector<std::string> symbols;
-
     if (symbol == "ALL") {
-        symbols = {"SPY", "QQQ", "DIA", "IWM", "XLF", "XLK", "XLV", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA"};
+        symbols = {"SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"};
     } else {
         symbols.push_back(symbol);
     }
@@ -152,9 +151,18 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
 
         std::string endDateTime = getCurrentDate();
-        std::string startDateTime = incremental ? db->getLastDailyEndDate(sym) : calculateStartDateFromDuration(duration);
-        if (startDateTime.empty()) {
-            startDateTime = calculateStartDateFromDuration("3 Y");  // Default to 3 years if no data
+        std::string startDateTime;
+
+        if (incremental) {
+            std::string lastDate = db->getLastDailyEndDate(sym);
+            std::string firstDate = db->getFirstDailyStartDate(sym);
+            if (firstDate.empty() || calculateDurationInDays(firstDate, endDateTime) > 365 * 10) {
+                startDateTime = calculateStartDateFromDuration("10 Y");
+            } else {
+                startDateTime = firstDate;
+            }
+        } else {
+            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
         }
 
         auto dateRanges = splitDateRange(startDateTime, endDateTime);
@@ -192,10 +200,11 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
                 std::this_thread::sleep_for(std::chrono::seconds(5));
             }
         }
-
-        stop();
+        
         STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
     }
+    
+    stop();
 }
 
 bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
@@ -362,7 +371,7 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     // If adj_close is not provided, use regular close
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
-    // Insert or update data in the database
+    // Store data in the database
     if (db->insertOrUpdateDailyData(date, dbData)) {
         STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
     } else {
