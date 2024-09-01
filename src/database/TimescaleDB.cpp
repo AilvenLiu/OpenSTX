@@ -128,7 +128,7 @@ void TimescaleDB::createTables() {
 
         txn.exec(R"(
             CREATE TABLE IF NOT EXISTS daily_data (
-                date DATE PRIMARY KEY,
+                date DATE,
                 symbol TEXT,
                 open DOUBLE PRECISION,
                 high DOUBLE PRECISION,
@@ -141,7 +141,8 @@ void TimescaleDB::createTables() {
                 rsi DOUBLE PRECISION,
                 macd DOUBLE PRECISION,
                 vwap DOUBLE PRECISION,
-                momentum DOUBLE PRECISION
+                momentum DOUBLE PRECISION,
+                CONSTRAINT daily_data_pkey PRIMARY KEY (date, symbol)
             );
         )");
 
@@ -184,8 +185,8 @@ bool TimescaleDB::insertRealTimeData(const std::string &datetime, const json &l1
     }
 }
 
-bool TimescaleDB::insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData) {
-    STX_LOGI(logger, "Inserting daily data for date " + date);
+bool TimescaleDB::insertOrUpdateDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData) {
+    STX_LOGI(logger, "Inserting or updating daily data for date " + date);
     try {
         pqxx::work txn(*conn);
 
@@ -203,13 +204,26 @@ bool TimescaleDB::insertDailyData(const std::string &date, const std::map<std::s
                             txn.quote(std::get<double>(dailyData.at("rsi"))) + ", " +
                             txn.quote(std::get<double>(dailyData.at("macd"))) + ", " +
                             txn.quote(std::get<double>(dailyData.at("vwap"))) + ", " +
-                            txn.quote(std::get<double>(dailyData.at("momentum"))) + ");";
+                            txn.quote(std::get<double>(dailyData.at("momentum"))) + ") " +
+                            "ON CONFLICT (date, symbol) DO UPDATE SET " +
+                            "open = EXCLUDED.open, " +
+                            "high = EXCLUDED.high, " +
+                            "low = EXCLUDED.low, " +
+                            "close = EXCLUDED.close, " +
+                            "volume = EXCLUDED.volume, " +
+                            "adj_close = EXCLUDED.adj_close, " +
+                            "sma = EXCLUDED.sma, " +
+                            "ema = EXCLUDED.ema, " +
+                            "rsi = EXCLUDED.rsi, " +
+                            "macd = EXCLUDED.macd, " +
+                            "vwap = EXCLUDED.vwap, " +
+                            "momentum = EXCLUDED.momentum;";
 
         txn.exec(query);
         txn.commit();
         return true;
     } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error inserting daily data: " + std::string(e.what()));
+        STX_LOGE(logger, "Error inserting or updating daily data: " + std::string(e.what()));
         return false;
     }
 }

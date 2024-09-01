@@ -140,52 +140,62 @@ void DailyDataFetcher::stop() {
 }
 
 void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
-    STX_LOGI(logger, "Fetching and processing historical data for symbol: " + symbol);
+    std::vector<std::string> symbols;
 
-    std::string endDateTime = getCurrentDate();
-    std::string startDateTime = incremental ? db->getLastDailyEndDate(symbol) : calculateStartDateFromDuration(duration);
-    if (startDateTime.empty()) {
-        startDateTime = calculateStartDateFromDuration("3 Y");  // Default to 3 years if no data
+    if (symbol == "ALL") {
+        symbols = {"SPY", "QQQ", "DIA", "IWM", "XLF", "XLK", "XLV", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA"};
+    } else {
+        symbols.push_back(symbol);
     }
 
-    auto dateRanges = splitDateRange(startDateTime, endDateTime);
+    for (const auto& sym : symbols) {
+        STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
 
-    int retryCount = 0;
-    const int maxRetries = 3;
-
-    while (retryCount < maxRetries) {
-        if (!connectToIB()) {
-            STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
-            retryCount++;
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            continue;
+        std::string endDateTime = getCurrentDate();
+        std::string startDateTime = incremental ? db->getLastDailyEndDate(sym) : calculateStartDateFromDuration(duration);
+        if (startDateTime.empty()) {
+            startDateTime = calculateStartDateFromDuration("3 Y");  // Default to 3 years if no data
         }
 
-        running = true;
-        bool success = true;
+        auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
-        for (const auto& range : dateRanges) {
-            if (!running) break;
+        int retryCount = 0;
+        const int maxRetries = 3;
 
-            if (!requestAndProcessMonthlyData(symbol, range.first, range.second)) {
-                success = false;
-                break;
+        while (retryCount < maxRetries) {
+            if (!connectToIB()) {
+                STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
+                retryCount++;
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+                continue;
             }
 
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            running = true;
+            bool success = true;
+
+            for (const auto& range : dateRanges) {
+                if (!running) break;
+
+                if (!requestAndProcessMonthlyData(sym, range.first, range.second)) {
+                    success = false;
+                    break;
+                }
+
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+
+            if (success) {
+                break;
+            } else {
+                retryCount++;
+                STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
+                std::this_thread::sleep_for(std::chrono::seconds(5));
+            }
         }
 
-        if (success) {
-            break;
-        } else {
-            retryCount++;
-            STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-        }
+        stop();
+        STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
     }
-
-    stop();
-    STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + symbol);
 }
 
 bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
@@ -352,8 +362,8 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     // If adj_close is not provided, use regular close
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
-    // Store data in the database
-    if (db->insertDailyData(date, dbData)) {
+    // Insert or update data in the database
+    if (db->insertOrUpdateDailyData(date, dbData)) {
         STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
     } else {
         STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);

@@ -21,8 +21,8 @@
 
 #include "Logger.hpp"
 
-Logger::Logger(const std::string& filename, LogLevel level)
-    : logLevel(level) {
+Logger::Logger(const std::string& filename, LogLevel level, LogLevel printLevel)
+    : logLevel(level), printLevel(printLevel) {  // Initialize printLevel
     logFile.open(filename, std::ios::app);
     if (!logFile.is_open()) {
         std::cerr << "Failed to open log file: " << filename << std::endl;
@@ -43,7 +43,7 @@ std::string Logger::getTimestamp() const {
 }
 
 void Logger::log(LogLevel level, const std::string& message, const char* file, int line, const char* func) {
-    if (level <= logLevel) {
+    if (level >= logLevel && level <= printLevel) {  // Check against printLevel
         std::lock_guard<std::mutex> lock(logMutex);
         logFile << "[" << getTimestamp() << "] "
                 << "[" << logLevelToString(level) << "] "

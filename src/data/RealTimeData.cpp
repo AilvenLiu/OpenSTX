@@ -192,8 +192,8 @@ void RealTimeData::requestData(int maxRetries=3, int retryDelayMs=2000) {
     Contract contract;
     contract.symbol = "SPY";
     contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.primaryExchange = "NYSE";
+    contract.exchange = "ARCA";  // Specify ARCA for L2 data
+    contract.primaryExchange = "ARCA";  // Specify ARCA for L2 data
     contract.currency = "USD";
 
     int l1RequestId = ++requestId;
@@ -205,23 +205,14 @@ void RealTimeData::requestData(int maxRetries=3, int retryDelayMs=2000) {
             client->reqMktData(l1RequestId, contract, "", false, false, TagValueListSPtr());
 
             STX_LOGD(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
-            client->reqMktDepth(l2RequestId, contract, 50, true, TagValueListSPtr());
-
-            // Start a thread to check for L2 data
-            std::thread([this, l2RequestId]() {
-                for (int i = 0; i < 10; ++i) {  // Check for 10 seconds
-                    std::this_thread::sleep_for(std::chrono::seconds(1));
-                    std::lock_guard<std::mutex> dataLock(dataMutex);
-                    if (!rawL2Data.empty()) {
-                        STX_LOGI(logger, "L2 data received successfully.");
-                        return;
-                    }
-                }
-                STX_LOGW(logger, "No L2 data received after 10 seconds. RequestId: " + std::to_string(l2RequestId));
-                // Consider re-requesting L2 data here
-            }).detach();
-
-            return; // Exit the function if the request was successful
+            if (requestL2DataHelper(contract, 50, true, {})) {
+                STX_LOGD(logger, "L2 data received successfully.");
+                checkDataHealth();  // Ensure data health after receiving L2 data
+                return; // Exit the function if the request was successful
+            } else {
+                STX_LOGW(logger, "No L2 data received. Retrying...");
+                throw std::runtime_error("L2 data request failed");
+            }
         } catch (const std::exception &e) {
             STX_LOGE(logger, "Error during requestData: " + std::string(e.what()));
             if (attempt < maxRetries - 1) {
@@ -232,6 +223,36 @@ void RealTimeData::requestData(int maxRetries=3, int retryDelayMs=2000) {
     }
 }
 
+bool RealTimeData::requestL2DataHelper(const Contract& contract, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions) {
+    STX_LOGD(logger, "Requesting L2 data for contract: " + contract.symbol + " with numRows=" + std::to_string(numRows)
+              + ", isSmartDepth=" + std::to_string(isSmartDepth) + ", mktDepthOptions=[]");
+
+    // Convert mktDepthOptions to TagValueListSPtr
+    TagValueListSPtr mktDepthOptionsPtr = std::make_shared<std::vector<std::shared_ptr<TagValue>>>();
+    for (const auto& option : mktDepthOptions) {
+        mktDepthOptionsPtr->push_back(std::make_shared<TagValue>(option));
+    }
+
+    // Request market depth data (L2)
+    client->reqMktDepth(++requestId, contract, numRows, isSmartDepth, mktDepthOptionsPtr);
+
+    // Wait for data to be received with a timeout
+    const int maxWaitTime = 10;  // Maximum wait time in seconds
+    for (int i = 0; i < maxWaitTime; ++i) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::lock_guard<std::mutex> lock(dataMutex);
+        if (!rawL2Data.empty()) {
+            STX_LOGD(logger, "L2 data received for " + contract.symbol + " with numRows=" + std::to_string(numRows)
+                      + ", isSmartDepth=" + std::to_string(isSmartDepth));
+            return true;
+        }
+    }
+
+    STX_LOGW(logger, "No L2 data received for " + contract.symbol + " with numRows=" + std::to_string(numRows)
+              + ", isSmartDepth=" + std::to_string(isSmartDepth));
+    return false;
+}
+
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
     std::lock_guard<std::mutex> lock(dataMutex);
     if (field == LAST) {
@@ -239,16 +260,9 @@ void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, co
         STX_LOGD(logger, "Received tick price: {\"TickerId\": " + std::to_string(tickerId) + ", \"Price\": " + std::to_string(price) + "}");
     }
 }
-
 void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
     std::lock_guard<std::mutex> lock(dataMutex);
     if (field == LAST_SIZE) {
-        // Check for duplicates (optional)
-        if (!l1Volumes.empty() && l1Volumes.back() == size) {
-            STX_LOGW(logger, "Duplicate tick size received: {\"TickerId\": " + std::to_string(tickerId) + ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
-            return;
-        }
-
         l1Volumes.push_back(size);
         STX_LOGD(logger, "Received tick size: {\"TickerId\": " + std::to_string(tickerId) + ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
     }
@@ -256,35 +270,45 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
 
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
     std::lock_guard<std::mutex> lock(dataMutex);
-    if (operation == 0) {  // Insert
-        rawL2Data.emplace_back(price, size, side == 1 ? "Buy" : "Sell");
-        STX_LOGI(logger, "Inserted L2 Data: Position " + std::to_string(position) + ", Price " + std::to_string(price) + ", Size " + DecimalFunctions::decimalToString(size));
-    } else if (operation == 1) {  // Update
-        if (position < rawL2Data.size()) {
-            rawL2Data[position] = {price, size, side == 1 ? "Buy" : "Sell"};
-            STX_LOGI(logger, "Updated L2 Data: Position " + std::to_string(position) + ", Price " + std::to_string(price) + ", Size " + DecimalFunctions::decimalToString(size));
-        }
-    } else if (operation == 2) {  // Delete
-        if (position < rawL2Data.size()) {
-            rawL2Data.erase(rawL2Data.begin() + position);
-            STX_LOGI(logger, "Deleted L2 Data: Position " + std::to_string(position));
-        }
+
+    // Ensure the rawL2Data vector is large enough
+    if (position >= rawL2Data.size()) {
+        rawL2Data.resize(position + 1);
     }
-}
 
-void RealTimeData::requestMarketDepth() {
-    int depthRows = 50;  // Number of rows of market depth to request
-
-    // Modify the contract to request data specifically from NYSE
-    Contract contract;
-    contract.symbol = "SPY";
-    contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.primaryExchange = "NYSE";
-    contract.currency = "USD";
-
-    client->reqMktDepth(++requestId, contract, depthRows, true, TagValueListSPtr());
-    STX_LOGI(logger, "Requested market depth for " + contract.symbol + " from NYSE");
+    // Process the operation
+    switch (operation) {
+        case 0: // Insert
+            rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
+            STX_LOGD(logger, "Inserted market depth: {\"TickerId\": " + std::to_string(id) + 
+                     ", \"Position\": " + std::to_string(position) + 
+                     ", \"Operation\": \"Insert\"" + 
+                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
+                     ", \"Price\": " + std::to_string(price) + 
+                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+            break;
+        case 1: // Update
+            rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
+            STX_LOGD(logger, "Updated market depth: {\"TickerId\": " + std::to_string(id) + 
+                     ", \"Position\": " + std::to_string(position) + 
+                     ", \"Operation\": \"Update\"" + 
+                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
+                     ", \"Price\": " + std::to_string(price) + 
+                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+            break;
+        case 2: // Delete
+            rawL2Data[position] = {0.0, 0, ""}; // Clear the entry
+            STX_LOGD(logger, "Deleted market depth: {\"TickerId\": " + std::to_string(id) + 
+                     ", \"Position\": " + std::to_string(position) + 
+                     ", \"Operation\": \"Delete\"" + 
+                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
+                     ", \"Price\": " + std::to_string(price) + 
+                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+            break;
+        default:
+            STX_LOGW(logger, "Unknown operation in updateMktDepth: " + std::to_string(operation));
+            break;
+    }
 }
 
 void RealTimeData::aggregateMinuteData() {
@@ -664,8 +688,7 @@ void RealTimeData::reconnect() {
 void RealTimeData::checkDataHealth() {
     std::lock_guard<std::mutex> lock(dataMutex);
     if (rawL2Data.empty()) {
-        STX_LOGW(logger, "L2 data is empty. Attempting to re-request market depth data.");
-        requestMarketDepth();
+        STX_LOGW(logger, "L2 data is empty. Please ensure that the data request is successful.");
     } else {
         STX_LOGI(logger, "L2 data is present. Number of entries: " + std::to_string(rawL2Data.size()));
     }

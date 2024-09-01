@@ -42,11 +42,12 @@ private:
     std::ofstream logFile;
     std::mutex logMutex;
     LogLevel logLevel;
+    LogLevel printLevel;  // New member variable for print level
 
     std::string getTimestamp() const;
 
 public:
-    Logger(const std::string& filename, LogLevel level = LogLevel::INFO);
+    Logger(const std::string& filename, LogLevel level = LogLevel::FATAL, LogLevel printLevel = LogLevel::INFO);  // Updated constructor
     ~Logger();
 
     void log(LogLevel level, const std::string& message, const char* file, int line, const char* func);

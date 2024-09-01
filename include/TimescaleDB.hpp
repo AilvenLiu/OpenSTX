@@ -40,7 +40,7 @@ public:
     ~TimescaleDB();
 
     bool insertRealTimeData(const std::string &datetime, const json &l1Data, const json &l2Data, const json &featureData);
-    bool insertDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData);
+    bool insertOrUpdateDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData);
 
     const std::string getLastDailyEndDate(const std::string &symbol);
 

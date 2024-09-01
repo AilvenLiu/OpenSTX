@@ -78,6 +78,7 @@ private:
         Decimal volume;
         std::string side; // "Buy" or "Sell"
         
+        L2DataPoint() : price(0.0), volume(0), side("") {} // Default constructor
         L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
     };
 
@@ -116,7 +117,7 @@ private:
     bool connectToIB(int maxRetries, int retryDelayMs);
     void reconnect();
     void requestData(int maxRetries, int retryDelayMs);
-    void requestMarketDepth();
+    bool requestL2DataHelper(const Contract& contract, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions);
     void aggregateMinuteData();
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);
