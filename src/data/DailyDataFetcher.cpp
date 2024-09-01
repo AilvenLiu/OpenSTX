@@ -109,9 +109,14 @@ bool DailyDataFetcher::connectToIB() {
 }
 
 void DailyDataFetcher::maintainConnection() {
-    while (shouldRun) {
-        reader->processMsgs();
-        osSignal->waitForSignal();
+    try {
+        while (shouldRun) {
+            reader->processMsgs();
+            osSignal->waitForSignal();
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Exception in maintainConnection: " + std::string(e.what()));
+        stop();
     }
 }
 
@@ -203,12 +208,12 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         
         STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
     }
-    
+
     stop();
 }
 
 bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
-    STX_LOGI(logger, "Requesting monthly data for " + symbol + " from " + startDate + " to " + endDate);
+    STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
 
     if (!requestDailyData(symbol, startDate, endDate, "1 day")) {
         return false;
@@ -330,17 +335,23 @@ void DailyDataFetcher::nextValidId(OrderId orderId) {
 }
 
 void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
-    std::string date = std::get<std::string>(historicalData.at("date"));
-    
+    std::string date;
+    try {
+        date = std::get<std::string>(historicalData.at("date"));
+    } catch (const std::out_of_range& e) {
+        STX_LOGE(logger, "Missing 'date' field in historical data for symbol: " + symbol);
+        return;
+    }
+
     std::map<std::string, std::variant<double, std::string>> dbData;
     dbData["symbol"] = symbol;
 
     // Required fields from IB API
     const std::vector<std::string> requiredFields = {"open", "high", "low", "close", "volume"};
     for (const auto& field : requiredFields) {
-        if (historicalData.find(field) != historicalData.end()) {
+        try {
             dbData[field] = std::get<double>(historicalData.at(field));
-        } else {
+        } catch (const std::out_of_range& e) {
             STX_LOGE(logger, "Missing required field: " + field + " for " + symbol + " on " + date);
             return;  // Skip this data point if a required field is missing
         }
