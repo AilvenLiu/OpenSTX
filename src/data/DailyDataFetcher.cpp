@@ -152,39 +152,43 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         symbols.push_back(symbol);
     }
 
-    for (const auto& sym : symbols) {
-        STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
+    int retryCount = 0;
+    const int maxRetries = 3;
 
-        std::string endDateTime = getCurrentDate();
-        std::string startDateTime;
-
-        if (incremental) {
-            std::string lastDate = db->getLastDailyEndDate(sym);
-            std::string firstDate = db->getFirstDailyStartDate(sym);
-            if (firstDate.empty() || calculateDurationInDays(firstDate, endDateTime) > 365 * 10) {
-                startDateTime = calculateStartDateFromDuration("10 Y");
-            } else {
-                startDateTime = firstDate;
-            }
-        } else {
-            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
+    while (retryCount < maxRetries) {
+        if (!connected && !connectToIB()) {
+            STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
+            retryCount++;
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            continue;
         }
 
-        auto dateRanges = splitDateRange(startDateTime, endDateTime);
+        running = true;
+        bool success = true;
 
-        int retryCount = 0;
-        const int maxRetries = 3;
+        for (const auto& sym : symbols) {
+            if (!running) break;
 
-        while (retryCount < maxRetries) {
-            if (!connectToIB()) {
-                STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
-                retryCount++;
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-                continue;
+            STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
+
+            std::string endDateTime = getCurrentDate();
+            std::string startDateTime;
+
+            if (incremental) {
+                std::string lastDate = db->getLastDailyEndDate(sym);
+                std::string firstDate = db->getFirstDailyStartDate(sym);
+                std::string tenYearsAgo = calculateStartDateFromDuration("10 Y");
+                
+                if (firstDate.empty() || firstDate > tenYearsAgo) {
+                    startDateTime = tenYearsAgo;
+                } else {
+                    startDateTime = lastDate;
+                }
+            } else {
+                startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
             }
 
-            running = true;
-            bool success = true;
+            auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
             for (const auto& range : dateRanges) {
                 if (!running) break;
@@ -197,16 +201,20 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
                 std::this_thread::sleep_for(std::chrono::seconds(2));
             }
 
-            if (success) {
-                break;
-            } else {
-                retryCount++;
-                STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
-                std::this_thread::sleep_for(std::chrono::seconds(5));
-            }
+            if (!success) break;
+            
+            STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
         }
-        
-        STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
+
+        if (success) {
+            break;
+        } else {
+            retryCount++;
+            STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            // Disconnect and reset connection state before retrying
+            stop();
+        }
     }
 
     stop();
