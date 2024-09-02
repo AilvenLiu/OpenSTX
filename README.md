@@ -1,11 +1,10 @@
 # Open Smart Trading eXpert (OpenSTX)
 
-OpenSTX is an open-source project designed for financial data quantitative analysis, utilizing Interactive Brokers as the primary data source. The project focuses on efficiently requesting, reorganizing, storing, and feature engineering financial data (L1 and L2 data for stocks and options). It leverages advanced deep learning models for quantitative analysis, visualization, automated metric generation, and incremental online learning to provide deeper insights into financial markets. OpenSTX is built to run on Apple Arm Silicon and macOS platforms, aiming to assist professionals in computer and statistical sciences in understanding financial markets through data.
-This project is on its early stage, should be developed continuously. 
+OpenSTX is an open-source project designed for financial data quantitative analysis, utilizing Interactive Brokers as the primary data source. The project focuses on efficiently requesting, reorganizing, storing, and feature engineering financial data (L1 and L2 data for stocks and options). It leverages advanced deep learning models for quantitative analysis, visualization, automated metric generation, and incremental online learning to provide deeper insights into financial markets. OpenSTX is built to run on Apple Arm Silicon and macOS platforms, aiming to assist professionals in computer and statistical sciences in understanding financial markets through data. This project is in its early stages and will be developed continuously.
 
 ## Project Structure
 
-```plaintext
+```
 OpenSTX
 ├── bin
 ├── build
@@ -26,45 +25,40 @@ OpenSTX
     └── libpqxx
 ```
 
-### **!!Special Notification!!**
-
-Manage your cloud database via [RDS dashboard](https://rdsnext.console.aliyun.com/dashboard) but not the garbaged DMS if alicloud postgrasql is used.
-
-
 ### Directory Breakdown
 
-- **bin/**: Contains the compiled binaries.
-- **build/**: Used during the build process to store temporary files.
-- **data/**: Houses data files used by the project.
-  - **analysis_pic/**: Images and plots generated from data analysis.
-  - **daily_data/**: Processed daily data files.
-  - **original_data/**: Raw data files.
-- **documents/**: Documentation related to the project.
-- **include/**: General header files used across different modules in the project.
-- **src/**: Contains the source files for the application.
-  - **data/**: C++ and Python files for data handling.
-  - **database/**: Database handling code, including integration with TimescaleDB.
-  - **logger/**: Source files for the logging module.
-- **test/**: Contains test files for the application.
-- **third_parts/**: External libraries used by the project.
-  - **ib_tws/**: Integration with Interactive Brokers TWS API.
-  - **libpqxx/**: PostgreSQL C++ client library (libpqxx).
+* **bin/**: Contains the compiled binaries.
+* **build/**: Used during the build process to store temporary files.
+* **data/**: Houses data files used by the project.  
+   * **analysis_pic/**: Images and plots generated from data analysis.  
+   * **daily_data/**: Processed daily data files.  
+   * **original_data/**: Raw data files.
+* **documents/**: Documentation related to the project.
+* **include/**: General header files used across different modules in the project.
+* **src/**: Contains the source files for the application.  
+   * **data/**: C++ and Python files for data handling.  
+   * **database/**: Database handling code, including integration with TimescaleDB.  
+   * **logger/**: Source files for the logging module.
+* **test/**: Contains test files for the application.
+* **third_parts/**: External libraries used by the project.  
+   * **ib_tws/**: Integration with Interactive Brokers TWS API.  
+   * **libpqxx/**: PostgreSQL C++ client library (libpqxx).
 
 ### Key Files
 
-- **CMakeLists.txt**: The root-level CMake configuration file for building the project.
-- **make.sh**: A shell script for building the project.
-- **LICENSE**: Project licensing information.
+* **CMakeLists.txt**: The root-level CMake configuration file for building the project.
+* **make.sh**: A shell script for building the project.
+* **LICENSE**: Project licensing information.
 
 ## Building Third-Party Libraries
 
 ### libpqxx
 
-For detailed instructions on building `libpqxx`, please refer to [third_parts/libpqxx/README.md](third_parts/libpqxx/README.md).
+For detailed instructions on building `libpqxx`, please refer to `third_parts/libpqxx/README.md`.
 
 ### IB TWS API
 
-For detailed instructions on building the Interactive Brokers TWS API, please refer to [third_parts/ib_tws/README.md](third_parts/ib_tws/README.md).
+For detailed instructions on building the Interactive Brokers TWS API, please refer to `third_parts/ib_tws/README.md`.
 
 ## Building the Application & Running the Application
 
@@ -72,36 +66,30 @@ For detailed instructions on building the Interactive Brokers TWS API, please re
 
 Before building the project on macOS, ensure you have the following tools installed:
 
-1. **Homebrew**: A package manager for macOS.
-   ```bash
+1. **Homebrew**: A package manager for macOS.  
+   ```sh
    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
    ```
-
-2. **CMake**: Required for building C++ projects.
-   ```bash
+2. **CMake**: Required for building C++ projects.  
+   ```sh
    brew install cmake
    ```
-
-3. **Boost**: A set of C++ libraries.
-   ```bash
+3. **Boost**: A set of C++ libraries.  
+   ```sh
    brew install boost
    ```
-
-4. **OpenSSL**: Required for secure connections.
-   ```bash
+4. **OpenSSL**: Required for secure connections.  
+   ```sh
    brew install openssl
    ```
-
-5. **PostgreSQL and TimescaleDB**: For database integration.
-   ```bash
+5. **PostgreSQL and TimescaleDB**: For database integration.  
+   ```sh
    brew install libpq
    brew install postgresql
    brew install timescaledb
    ```
-
-   Sometimes there's no timescaledb from brew, then you are suggedted to build and install it from source code:    
-   
-   ```bash
+   If TimescaleDB is not available via Homebrew, build and install it from source:
+   ```sh
    git clone https://github.com/timescale/timescaledb.git
    cd timescaledb
    ./bootstrap
@@ -109,70 +97,49 @@ Before building the project on macOS, ensure you have the following tools instal
    make -j
    sudo make install
    ```
-
-   Of course that you may also use a cloud-based TimescaleDB from Amazon Cloud or AliCloud, which is also our solution in production stage. 
-
-   Start it up and check the status: 
-   ```bash
-   brew services start postgresql # start the db service
-   pg_ctl status -D /opt/homebrew/var/postgresql@14 # check the running status
+   Start and check the status of PostgreSQL:
+   ```sh
+   brew services start postgresql
+   pg_ctl status -D /opt/homebrew/var/postgresql@14
    ```
-
-   For using the timescaleDB extention, you'd modify the postgres' config:    
-   ```bash
-   vim /opt/homebrew/var/postgresql@14/postgresql.conf # only be the same with MACOS installed from brew
-   ```     
-   and modify 
-   ```plaintext
+   Modify PostgreSQL configuration for TimescaleDB:
+   ```sh
+   vim /opt/homebrew/var/postgresql@14/postgresql.conf
+   ```
+   Add the following line:
+   ```sh
    shared_preload_libraries = 'timescaledb'
    ```
-   then restart the service:    
-   ```bash
+   Restart the PostgreSQL service:
+   ```sh
    brew services restart postgresql
    ```
-
-   Add a db user:   
-   ```sql
+   Create a database user:
+   ```sh
    psql postgres
-   CREATE USER new_user WITH PASSWORD 'your_password'; # create a user
-   ALTER USER new_user CREATEDB;; # alter user to create db
-   quit;
+   CREATE USER new_user WITH PASSWORD 'your_password';
+   ALTER USER new_user CREATEDB;
    ```
-
-   In the development stage, you may need to create and delete db & table frequently, which need a priority of super-user:
-   ```sql
+   For development, grant superuser privileges (not recommended for production):
+   ```sh
    ALTER USER new_user WITH SUPERUSER;
    ```
-   **Howvere, it's strictly forbided in a product environment!!**
-
-   To point the database on a special path, you'd create a table space as follow:
-   ```sql
-   psql postgres
+   Create a tablespace and database:
+   ```sh
    CREATE TABLESPACE openstx_space LOCATION '${PROJECT_ROOT}/db';
-   ```
-
-   So that it's allowed to create a database in this space as :
-   ```sql
    CREATE DATABASE openstx TABLESPACE openstx_space;
    ```
-
 6. **GCC or Clang**: Ensure you have an up-to-date C++ compiler, typically provided with Xcode on macOS.
-
-7. **Python**: Required for running Python scripts.
-   ```bash
+7. **Python**: Required for running Python scripts.  
+   ```sh
    brew install python
    ```
-
-### **!!Special Notification!!**
-
-Manage your cloud database via [RDS dashboard](https://rdsnext.console.aliyun.com/dashboard) but not the garbaged DMS.
-
 
 ### Configuring Environment Variables
 
 Ensure that OpenSSL libraries are correctly linked:
 
-```bash
+```sh
 export OPENSSL_ROOT_DIR=$(brew --prefix openssl)
 export OPENSSL_LIBRARIES=$(brew --prefix openssl)/lib
 export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
@@ -182,33 +149,29 @@ export OPENSSL_INCLUDE_DIR=$(brew --prefix openssl)/include
 
 To build the application:
 
-1. **Install dependencies**:
-   ```bash
+1. **Install dependencies**:  
+   ```sh
    pip install -r requirements.txt
    ```
-
-2. **Create a build directory and navigate into it**:
-   ```bash
+2. **Create a build directory and navigate into it**:  
+   ```sh
    mkdir -p build && cd build
    ```
-
-3. **Run CMake to configure the project**:
-   ```bash
+3. **Run CMake to configure the project**:  
+   ```sh
    cmake ..
    ```
-
-4. **Build the application**:
-   ```bash
+4. **Build the application**:  
+   ```sh
    make -j8
    ```
-
    The executable will be placed in the `bin/` directory.
 
 ### Running the Application
 
 To run the main application:
 
-```bash
+```sh
 ./bin/OpenSTX
 ```
 
@@ -216,7 +179,7 @@ To run the main application:
 
 Python scripts for data fetching and analysis are located in `src/data/`. You can run them directly using Python:
 
-```bash
+```sh
 python src/data/get_data.py
 python src/data/get_realtime_data.py
 ```
@@ -225,30 +188,30 @@ python src/data/get_realtime_data.py
 
 ### API Module (`third_parts/ib_tws/`)
 
-- **Purpose**: Provides integration with Interactive Brokers TWS API.
-- **Build**: Outputs a dynamic library (`libib_tws.dylib`).
-- **Dependencies**: Requires modifications to `Decimal.h` on macOS for compatibility with Apple Silicon. Detailed instructions can be found in the [README.md](third_parts/ib_tws/README.md).
+* **Purpose**: Provides integration with Interactive Brokers TWS API.
+* **Build**: Outputs a dynamic library (`libib_tws.dylib`).
+* **Dependencies**: Requires modifications to `Decimal.h` on macOS for compatibility with Apple Silicon. Detailed instructions can be found in the README.md.
 
 ### Data Module (`src/data/`)
 
-- **Purpose**: Handles data fetching, processing, and storage.
-- **Technology**: Uses C++ for core data handling and Python for flexible data analysis.
+* **Purpose**: Handles data fetching, processing, and storage.
+* **Technology**: Uses C++ for core data handling and Python for flexible data analysis.
 
 ### Logger Module (`src/logger/`)
 
-- **Purpose**: Provides logging facilities.
-- **Technology**: Implemented in C++ for performance.
+* **Purpose**: Provides logging facilities.
+* **Technology**: Implemented in C++ for performance.
 
 ### TimescaleDB Integration (`src/database/TimescaleDB.cpp`)
 
-- **Purpose**: Provides time-series data storage and query capabilities using TimescaleDB.
-- **Technology**: Uses `libpqxx` for PostgreSQL and TimescaleDB interaction.
-- **Dependencies**: Requires TimescaleDB and PostgreSQL to be installed and configured.
+* **Purpose**: Provides time-series data storage and query capabilities using TimescaleDB.
+* **Technology**: Uses `libpqxx` for PostgreSQL and TimescaleDB interaction.
+* **Dependencies**: Requires TimescaleDB and PostgreSQL to be installed and configured.
 
 ### Main Application (`src/main.cpp`)
 
-- **Purpose**: The entry point of the application.
-- **Technology**: C++.
+* **Purpose**: The entry point of the application.
+* **Technology**: C++.
 
 ## Troubleshooting and Common Errors
 
@@ -262,13 +225,5 @@ If you encounter undefined symbols related to `libpqxx`, ensure:
 
 ### Other Issues
 
-- **Linking Errors**: Ensure all dependencies are correctly installed and linked.
-- **Compiler Errors**: Check for missing headers or incompatible C++ standards.
-
-## License
-
-This project is licensed under the terms specified in the `LICENSE` file.
-
-## Contributing
-
-Contributions are welcome! Please fork the repository and submit a pull request with your changes.
+* **Linking Errors**: Ensure all dependencies are correctly installed and linked.
+* **Compiler Errors**: Check for missing headers or incompatible C++ standards.
