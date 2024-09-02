@@ -100,3 +100,26 @@
 10. 实现程序常驻后台，以便持续不断地获取数据
 
 请回顾任务环境与目标，仔细理解需求，然后给出完整的程序实现。
+
+
+
+# python trading system
+
+read completely and analyze all of the python scripts in the mentioned folder, optimize and improve it as an advanced, comprehensive, sophisticated, smart daily-level quantized system which specialied on US Stocks(ETFs involved) Market to meet the specified requirements below:
+0. the current symbols are: ["SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"]
+1. profitable stably and consecutively.
+2. introducing more advanced (combination of) strategies, algorithms, and models verified on financial data. 
+3. enhancing the models ablity of  incremental, online and consecutive learning with the latest data is feeded each day
+4. improving the backtesting system to judge the performance of the (combination of) strategies, algorithms, and models as comprehesive and effecient as possible.
+5. implementing the autonomous selection of the best (combination of) strategies, algorithms, and models based on the result of backtesting each day for all of each symbol seperately.
+6. professional position management and risk management system. (account info can be attained from IB TWS API)
+7. finally implementing a smart daily-level quantized system to autonomously decide and selects which symbol should be bought, selled, or holded according to the (combination of) strategies, algorithms and models and the position and risk management system, and do it (trading) via IB TWS API
+
+Repeat it:
+You are asked to read and analyze the full code from the folder mentioned first, consider and implement it carefully according to the requirements pointed above.
+Noticed that: 
+1. You are asked to implement it as fully and completely as possible. Any example, blank or uncomplete implementation is forbidden strictly since any uncomplete implementation if fatal in financial market!
+2. You are asked to response and generate full and complete code file-by-file, no code segmentations are required.
+3. strategies, algorithms, and models is the kernel for a smart quantized system, make sure they are specialized for the financial data.
+
+@daily_trading 

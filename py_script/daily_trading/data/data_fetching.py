@@ -1,6 +1,5 @@
 import psycopg2
 import pandas as pd
-from db_config import read_db_config
 
 def fetch_data_from_db(symbols, db_config, chunk_size=10000):
     conn = psycopg2.connect(**db_config)

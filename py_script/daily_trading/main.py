@@ -1,9 +1,9 @@
-from db_config import read_db_config
-from data_loader import AsyncDataLoader
-from model_training import train_models, make_predictions
-from realtime_trading import real_time_trading
-from consecutive_learning import continuous_learning
-from backtesting import backtest
+from config.db_config import read_db_config
+from data.data_loader import AsyncDataLoader
+from models.model_training import train_models, make_predictions
+from trading.realtime_trading import real_time_trading
+from trading.consecutive_learning import continuous_learning
+from trading.backtesting import backtest
 import threading
 
 def main():

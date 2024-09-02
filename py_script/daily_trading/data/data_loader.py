@@ -45,6 +45,7 @@ class AsyncDataLoader:
                         break
             except queue.Full:
                 time.sleep(0.1)
+
     def __iter__(self):
         return self
 

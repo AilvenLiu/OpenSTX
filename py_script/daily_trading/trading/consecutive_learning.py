@@ -1,8 +1,8 @@
 import time
-from data_fetching import fetch_data
-from data_preprocessing import preprocess_data
-from model_training import update_model, update_lstm_model
-from db_config import read_db_config
+from data.data_fetching import fetch_data
+from data.data_preprocessing import preprocess_data
+from models.model_training import update_model, update_lstm_model
+from config.db_config import read_db_config
 
 def continuous_learning(symbols, db_config, models, lstm_models, interval=3600):
     while True:

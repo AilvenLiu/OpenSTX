@@ -1,9 +1,8 @@
 import time
-from data_fetching import fetch_data
-from data_preprocessing import preprocess_data
-from model_training import make_predictions
-from trading_execution import execute_trades
-from db_config import read_db_config
+from data.data_fetching import fetch_data
+from data.data_preprocessing import preprocess_data
+from models.model_training import make_predictions
+from trading.trading_execution import execute_trades
 
 def real_time_trading(symbols, db_config, models, lstm_models, interval=3600):
     while True:

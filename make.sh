@@ -12,14 +12,14 @@ echo "Current Direction: $PROJECT_DIR"
 if [ -d "$BUILD_DIR" ]; then
     echo "Removing old build directory..."
     rm -rf "$BUILD_DIR"
-    mkdir -p "$BUILD_DIR"
 fi
+mkdir -p "$BUILD_DIR"
 
 if [ -d "$BIN_DIR" ]; then
     echo "Removing old  directory..."
     rm -rf "$BIN_DIR"
-    mkdir -p "$BIN_DIR"
 fi
+mkdir -p "$BIN_DIR"
 
 if [ ! -d "$LIB_DIR" ]; then
     echo "[ERROR] lib path not exist: $LIB_DIR"
