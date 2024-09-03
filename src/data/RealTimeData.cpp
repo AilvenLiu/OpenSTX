@@ -53,7 +53,9 @@ RealTimeData::~RealTimeData() {
 }
 
 bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
-    std::lock_guard<std::mutex> lock(clientMutex);
+    STX_LOGD(logger, "Attempting to acquire connectionMutex in connectToIB");
+    std::lock_guard<std::mutex> lock(connectionMutex);
+    STX_LOGD(logger, "Acquired connectionMutex in connectToIB");
 
     for (int attempt = 0; attempt < maxRetries; ++attempt) {
         try {
@@ -90,23 +92,21 @@ bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
 }
 
 void RealTimeData::start() {
+    STX_LOGD(logger, "Attempting to acquire clientMutex in start");
     {
         std::lock_guard<std::mutex> lock(clientMutex);
+        STX_LOGD(logger, "Acquired clientMutex in start");
         if (running) {
             STX_LOGI(logger, "RealTimeData is already running.");
             return;
         }
         STX_LOGI(logger, "Starting RealTimeData collection...");
+        running = true;
     }
 
     if (!connected && !connectToIB()) {
         STX_LOGE(logger, "Failed to connect to IB TWS.");
         return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(clientMutex);
-        running = true;
     }
 
     initializeSharedMemory();
@@ -119,63 +119,64 @@ void RealTimeData::start() {
 }
 
 void RealTimeData::stop() {
+    STX_LOGD(logger, "Attempting to acquire clientMutex in stop");
     {
-        std::lock_guard<std::mutex> clientLock(clientMutex);
-        std::lock_guard<std::mutex> readerLock(readerMutex);
+        std::lock_guard<std::mutex> lock(clientMutex);
+        STX_LOGD(logger, "Acquired clientMutex in stop");
         if (!running) return;
-
         running = false;
+    }
 
+    STX_LOGD(logger, "Attempting to acquire connectionMutex in stop");
+    {
+        std::lock_guard<std::mutex> lock(connectionMutex);
+        STX_LOGD(logger, "Acquired connectionMutex in stop");
         if (client && client->isConnected()) {
             client->eDisconnect();
             STX_LOGI(logger, "Disconnected from IB TWS");
         }
     }
 
+    {
+        std::lock_guard<std::mutex> lock(cvMutex);
+        cv.notify_all();
+    }
+
     joinThreads();
     boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
 
+    STX_LOGD(logger, "Attempting to acquire clientMutex in stop (cleanup)");
     {
-        std::lock_guard<std::mutex> clientLock(clientMutex);
+        std::lock_guard<std::mutex> lock(clientMutex);
+        STX_LOGD(logger, "Acquired clientMutex in stop (cleanup)");
         client.reset();
         reader.reset();
+        connected = false;
     }
 
-    connected = false;
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
 void RealTimeData::requestData(int maxRetries, int retryDelayMs) {
-    std::lock_guard<std::mutex> lock(clientMutex);
-
-    if (!client || !client->isConnected()) {
-        STX_LOGE(logger, "Not connected to IB TWS. Attempting to reconnect...");
-        reconnect();
-        if (!client || !client->isConnected()) {
-            STX_LOGE(logger, "Reconnection failed. Cannot request data.");
-            return;
-        }
-    }
-
     Contract contract = createContract("SPY", "STK", "ARCA", "USD");
+    STX_LOGD(logger, "Created contract: Symbol=" + contract.symbol + ", SecType=" + contract.secType + ", Exchange=" + contract.exchange + ", Currency=" + contract.currency);
 
     for (int attempt = 0; attempt < maxRetries; ++attempt) {
         try {
-            int l1RequestId = ++requestId;
-            int l2RequestId = ++requestId;
+            int l1RequestId, l2RequestId;
+            {
+                std::lock_guard<std::mutex> lock(clientMutex);
+                l1RequestId = ++requestId;
+                l2RequestId = ++requestId;
+            } // Release the mutex here
 
-            STX_LOGD(logger, "Requesting L1 data with request ID: " + std::to_string(l1RequestId));
-            client->reqMktData(l1RequestId, contract, "", false, false, TagValueListSPtr());
+            std::thread l1Thread(&RealTimeData::requestL1Data, this, l1RequestId, std::ref(contract));
+            std::thread l2Thread(&RealTimeData::requestL2Data, this, l2RequestId, std::ref(contract));
 
-            STX_LOGD(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
-            if (requestL2DataHelper(contract, 50, true, {})) {
-                STX_LOGD(logger, "L2 data received successfully.");
-                checkDataHealth();
-                return;
-            } else {
-                STX_LOGW(logger, "No L2 data received. Retrying...");
-                throw std::runtime_error("L2 data request failed");
-            }
+            l1Thread.join();
+            l2Thread.join();
+
+            return;
         } catch (const std::exception &e) {
             STX_LOGE(logger, "Error during requestData: " + std::string(e.what()));
             if (attempt < maxRetries - 1) {
@@ -186,43 +187,15 @@ void RealTimeData::requestData(int maxRetries, int retryDelayMs) {
     }
 }
 
-bool RealTimeData::requestL2DataHelper(const Contract& contract, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions) {
-    std::lock_guard<std::mutex> lock(clientMutex);
+void RealTimeData::requestL1Data(int l1RequestId, const Contract& contract) {
+    STX_LOGD(logger, "Requesting L1 data with request ID: " + std::to_string(l1RequestId));
+    client->reqMktData(l1RequestId, contract, "", false, false, TagValueListSPtr());
+}
 
-    if (!client || !client->isConnected()) {
-        STX_LOGE(logger, "Not connected to IB TWS. Attempting to reconnect...");
-        reconnect();
-        if (!client || !client->isConnected()) {
-            STX_LOGE(logger, "Reconnection failed. Cannot request L2 data.");
-            return false;
-        }
-    }
-
-    STX_LOGD(logger, "Requesting L2 data for contract: " + contract.symbol + " with numRows=" + std::to_string(numRows)
-              + ", isSmartDepth=" + std::to_string(isSmartDepth) + ", mktDepthOptions=[]");
-
+void RealTimeData::requestL2Data(int l2RequestId, const Contract& contract) {
+    STX_LOGD(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
     TagValueListSPtr mktDepthOptionsPtr = std::make_shared<std::vector<std::shared_ptr<TagValue>>>();
-    for (const auto& option : mktDepthOptions) {
-        mktDepthOptionsPtr->push_back(std::make_shared<TagValue>(option));
-    }
-
-    int l2RequestId = ++requestId;
-    client->reqMktDepth(l2RequestId, contract, numRows, isSmartDepth, mktDepthOptionsPtr);
-
-    const int maxWaitTime = 20;
-    for (int i = 0; i < maxWaitTime; ++i) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        std::lock_guard<std::mutex> lock(dataMutex);
-        if (!rawL2Data.empty()) {
-            STX_LOGD(logger, "L2 data received for " + contract.symbol + " with numRows=" + std::to_string(numRows)
-                      + ", isSmartDepth=" + std::to_string(isSmartDepth));
-            return true;
-        }
-    }
-
-    STX_LOGW(logger, "No L2 data received for " + contract.symbol + " with numRows=" + std::to_string(numRows)
-              + ", isSmartDepth=" + std::to_string(isSmartDepth));
-    return false;
+    client->reqMktDepth(l2RequestId, contract, 50, false, mktDepthOptionsPtr);
 }
 
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
@@ -290,7 +263,8 @@ void RealTimeData::aggregateMinuteData() {
              ", Raw L2 Data count: " + std::to_string(rawL2Data.size()));
 
     if (l1Prices.empty() || l1Volumes.empty() || rawL2Data.empty()) {
-        STX_LOGW(logger, "Incomplete data. Skipping aggregation.");
+        STX_LOGW(logger, "Incomplete data. Clearing temporary data and skipping aggregation.");
+        clearTemporaryData();
         return;
     }
 
@@ -559,10 +533,10 @@ void RealTimeData::nextValidId(OrderId orderId) {
 }
 
 void RealTimeData::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
-    STX_LOGE(logger, "IB API Error: ID=" + std::to_string(id) + ", Code=" + std::to_string(errorCode) + ", Message=" + errorString);
+    STX_LOGW(logger, "IB API Error: ID=" + std::to_string(id) + ", Code=" + std::to_string(errorCode) + ", Message=" + errorString);
     
     if (!advancedOrderRejectJson.empty()) {
-        STX_LOGE(logger, "Advanced Order Reject JSON: " + advancedOrderRejectJson);
+        STX_LOGW(logger, "Advanced Order Reject JSON: " + advancedOrderRejectJson);
     }
 
     switch (errorCode) {
@@ -642,6 +616,7 @@ void RealTimeData::reconnect() {
     while (attempts < max_attempts) {
         if (connectToIB()) {
             STX_LOGI(logger, "Reconnected to IB TWS successfully.");
+            start();
             return;
         } else {
             int delay = base_delay * std::pow(2, attempts);
@@ -698,13 +673,13 @@ void RealTimeData::joinThreads() {
         processDataThread.join();
         STX_LOGI(logger, "processDataThread joined successfully");
     }
-    if (readerThread.joinable()) {
-        readerThread.join();
-        STX_LOGI(logger, "readerThread joined successfully");
-    }
     if (connectivityThread.joinable()) {
         connectivityThread.join();
         STX_LOGI(logger, "connectivityThread joined successfully");
+    }
+    if (readerThread.joinable()) {
+        readerThread.join();
+        STX_LOGI(logger, "readerThread joined successfully");
     }
 }
 

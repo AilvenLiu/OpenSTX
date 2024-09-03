@@ -37,6 +37,7 @@
 #include <map>
 #include <set>
 #include <numeric>
+#include <condition_variable>
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
 #include "EClientSocket.h"
@@ -93,11 +94,16 @@ private:
     std::mutex dataMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
+    std::mutex connectionMutex;
+    std::mutex cvMutex;
+    std::condition_variable cv;
 
     bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
     void reconnect();
     void requestData(int maxRetries = 3, int retryDelayMs = 2000);
-    bool requestL2DataHelper(const Contract& contract, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions);
+    void requestL1Data(int l1RequestId, const Contract& contract);
+    void requestL2Data(int l2RequestID, const Contract& contract);
+    bool requestL2DataHelper(const Contract& contract, int l2RequestId, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions);
     void aggregateMinuteData();
     void writeToSharedMemory(const std::string &data);
     void processL2Data(int position, double price, Decimal size, int side);

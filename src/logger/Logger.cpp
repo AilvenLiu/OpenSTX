@@ -22,10 +22,10 @@
 #include "Logger.hpp"
 
 Logger::Logger(const std::string& filename, LogLevel level)
-    : logLevel(level) {  // Initialize printLevel
-    logFile.open(filename, std::ios::app);
+    : logLevel(level) {
+    logFile.open(filename, std::ios::out | std::ios::app);
     if (!logFile.is_open()) {
-        std::cerr << "Failed to open log file: " << filename << std::endl;
+        throw std::runtime_error("Unable to open log file: " + filename);
     }
 }
 
@@ -35,30 +35,40 @@ Logger::~Logger() {
     }
 }
 
-std::string Logger::getTimestamp() const {
-    std::time_t now = std::time(nullptr);
-    char buf[100];
-    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-    return std::string(buf);
+void Logger::log(LogLevel level, const std::string& message, const char* file, int line, const char* func) {
+    if (level > logLevel) return;
+
+    std::lock_guard<std::mutex> lock(logMutex);
+    logFile << getTimestamp() << " [" << logLevelToString(level) << "] [" << file << ":" << line << " - " << func << "] " << message << std::endl;
 }
 
-void Logger::log(LogLevel level, const std::string& message, const char* file, int line, const char* func) {
-    if (level <= logLevel) {  // Check against printLevel
-        std::lock_guard<std::mutex> lock(logMutex);
-        logFile << "[" << getTimestamp() << "] "
-                << "[" << logLevelToString(level) << "] "
-                << "[" << file << ":" << line << " - " << func << "] "
-                << message << std::endl;
-    }
+void Logger::setLogLevel(LogLevel level) {
+    logLevel = level;
 }
 
 std::string Logger::logLevelToString(LogLevel level) {
     switch (level) {
-        case LogLevel::FATAL: return "FATAL";
-        case LogLevel::ERROR: return "ERROR";
-        case LogLevel::WARNING: return "WARNING";
-        case LogLevel::INFO: return "INFO";
-        case LogLevel::DEBUG: return "DEBUG";
+        case FATAL: return "FATAL";
+        case ERROR: return "ERROR";
+        case WARNING: return "WARNING";
+        case INFO: return "INFO";
+        case DEBUG: return "DEBUG";
         default: return "UNKNOWN";
     }
+}
+
+LogLevel Logger::stringToLogLevel(const std::string& levelStr) {
+    if (levelStr == "FATAL") return FATAL;
+    if (levelStr == "ERROR") return ERROR;
+    if (levelStr == "WARNING") return WARNING;
+    if (levelStr == "INFO") return INFO;
+    if (levelStr == "DEBUG") return DEBUG;
+    throw std::invalid_argument("Unknown log level: " + levelStr);
+}
+
+std::string Logger::getTimestamp() const {
+    std::time_t now = std::time(nullptr);
+    char buf[20];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+    return buf;
 }

@@ -28,7 +28,7 @@
 #include <mutex>
 #include <ctime>
 
-// 定义日志级别的枚举
+// Define log levels
 enum LogLevel {
     FATAL,
     ERROR,
@@ -46,15 +46,17 @@ private:
     std::string getTimestamp() const;
 
 public:
-    Logger(const std::string& filename, LogLevel level = INFO);  // Updated constructor
+    Logger(const std::string& filename, LogLevel level = INFO);
     ~Logger();
 
     void log(LogLevel level, const std::string& message, const char* file, int line, const char* func);
+    void setLogLevel(LogLevel level);
 
     static std::string logLevelToString(LogLevel level);
+    static LogLevel stringToLogLevel(const std::string& levelStr);
 };
 
-// 定义日志宏
+// Define log macros
 #define STX_LOGF(logger, message) (logger)->log(LogLevel::FATAL, message, __FILE__, __LINE__, __func__)
 #define STX_LOGE(logger, message) (logger)->log(LogLevel::ERROR, message, __FILE__, __LINE__, __func__)
 #define STX_LOGW(logger, message) (logger)->log(LogLevel::WARNING, message, __FILE__, __LINE__, __func__)
