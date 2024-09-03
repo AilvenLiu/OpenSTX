@@ -24,7 +24,7 @@ def main():
     # Connect to IB Gateway or TWS
     ib = IB()
     try:
-        ib.connect('127.0.0.1', 7496, clientId=1)  # Adjust the host, port, and clientId as needed
+        ib.connect('127.0.0.1', 7496, clientId=3)  # Adjust the host, port, and clientId as needed
         logger.info("Connected to IB Gateway/TWS")
 
         # Define the contract for SPY

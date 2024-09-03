@@ -24,14 +24,13 @@
 #include <thread>
 #include <chrono>
 #include <boost/circular_buffer.hpp>
-
 #include "RealTimeData.hpp"
 
 using json = nlohmann::json;
 
 constexpr const char* IB_HOST = "127.0.0.1";
 constexpr int IB_PORT = 7496;
-constexpr int IB_CLIENT_ID = 0;
+constexpr int IB_CLIENT_ID = 1;
 constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
 constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
@@ -43,12 +42,8 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
       nextOrderId(0), 
       requestId(0), yesterdayClose(0.0), running(false), previousVolume(0), connected(false) {
 
-    if (!logger) {
-        throw std::runtime_error("Logger is null");
-    }
-    if (!db) {
-        STX_LOGE(logger, "TimescaleDB is null");
-        throw std::runtime_error("TimescaleDB is null");
+    if (!logger || !db) {
+        throw std::runtime_error("Logger or TimescaleDB is null");
     }
     STX_LOGI(logger, "RealTimeData object created successfully.");
 }
@@ -57,16 +52,12 @@ RealTimeData::~RealTimeData() {
     stop(); 
 }
 
-bool RealTimeData::connectToIB(int maxRetries=3, int retryDelayMs=2000) {
+bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
     std::lock_guard<std::mutex> lock(clientMutex);
 
     for (int attempt = 0; attempt < maxRetries; ++attempt) {
         try {
             client = std::make_unique<EClientSocket>(this, osSignal.get());
-            if (!client) {
-                throw std::runtime_error("Failed to create EClientSocket");
-            }
-
             if (!client->eConnect(IB_HOST, IB_PORT, IB_CLIENT_ID, false)) {
                 throw std::runtime_error("Failed to connect to IB TWS");
             }
@@ -108,13 +99,9 @@ void RealTimeData::start() {
         STX_LOGI(logger, "Starting RealTimeData collection...");
     }
 
-    if (!connected) {
-        STX_LOGI(logger, "Attempting to connect to IB TWS...");
-        if (!connectToIB()) {
-            STX_LOGE(logger, "Failed to connect to IB TWS.");
-            return;
-        }
-        STX_LOGI(logger, "Successfully connected to IB TWS.");
+    if (!connected && !connectToIB()) {
+        STX_LOGE(logger, "Failed to connect to IB TWS.");
+        return;
     }
 
     {
@@ -122,30 +109,11 @@ void RealTimeData::start() {
         running = true;
     }
 
-    STX_LOGI(logger, "Initializing shared memory...");
-    boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
-    shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, SHARED_MEMORY_NAME, boost::interprocess::read_write);
-    shm.truncate(SHARED_MEMORY_SIZE);
-    region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
-    STX_LOGI(logger, "Shared memory initialized successfully.");
+    initializeSharedMemory();
+    requestData();
 
-    STX_LOGI(logger, "Requesting market data...");
-    requestData(3, 2000);  // Add the required arguments
-
-    STX_LOGI(logger, "Starting data processing thread...");
-    processDataThread = std::thread([this]() {
-        while (running) {
-            auto now = std::chrono::system_clock::now();
-            auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
-
-            std::this_thread::sleep_until(nextMinute);
-
-            aggregateMinuteData();
-
-            // Check data health
-            checkDataHealth();
-        }
-    });
+    processDataThread = std::thread(&RealTimeData::processData, this);
+    connectivityThread = std::thread(&RealTimeData::monitorConnectivity, this);
 
     STX_LOGI(logger, "RealTimeData collection started successfully.");
 }
@@ -164,15 +132,7 @@ void RealTimeData::stop() {
         }
     }
 
-    if (processDataThread.joinable()) {
-        processDataThread.join();
-        STX_LOGI(logger, "processDataThread joined successfully");
-    }
-    if (readerThread.joinable()) {
-        readerThread.join();
-        STX_LOGI(logger, "readerThread joined successfully");
-    }
-
+    joinThreads();
     boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
 
     {
@@ -182,33 +142,36 @@ void RealTimeData::stop() {
     }
 
     connected = false;
-
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
 
-void RealTimeData::requestData(int maxRetries=3, int retryDelayMs=2000) {
+void RealTimeData::requestData(int maxRetries, int retryDelayMs) {
     std::lock_guard<std::mutex> lock(clientMutex);
 
-    Contract contract;
-    contract.symbol = "SPY";
-    contract.secType = "STK";
-    contract.exchange = "ARCA";  // Specify ARCA for L2 data
-    contract.primaryExchange = "ARCA";  // Specify ARCA for L2 data
-    contract.currency = "USD";
+    if (!client || !client->isConnected()) {
+        STX_LOGE(logger, "Not connected to IB TWS. Attempting to reconnect...");
+        reconnect();
+        if (!client || !client->isConnected()) {
+            STX_LOGE(logger, "Reconnection failed. Cannot request data.");
+            return;
+        }
+    }
 
-    int l1RequestId = ++requestId;
-    int l2RequestId = ++requestId;
+    Contract contract = createContract("SPY", "STK", "ARCA", "USD");
 
     for (int attempt = 0; attempt < maxRetries; ++attempt) {
         try {
+            int l1RequestId = ++requestId;
+            int l2RequestId = ++requestId;
+
             STX_LOGD(logger, "Requesting L1 data with request ID: " + std::to_string(l1RequestId));
             client->reqMktData(l1RequestId, contract, "", false, false, TagValueListSPtr());
 
             STX_LOGD(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
             if (requestL2DataHelper(contract, 50, true, {})) {
                 STX_LOGD(logger, "L2 data received successfully.");
-                checkDataHealth();  // Ensure data health after receiving L2 data
-                return; // Exit the function if the request was successful
+                checkDataHealth();
+                return;
             } else {
                 STX_LOGW(logger, "No L2 data received. Retrying...");
                 throw std::runtime_error("L2 data request failed");
@@ -224,20 +187,29 @@ void RealTimeData::requestData(int maxRetries=3, int retryDelayMs=2000) {
 }
 
 bool RealTimeData::requestL2DataHelper(const Contract& contract, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions) {
+    std::lock_guard<std::mutex> lock(clientMutex);
+
+    if (!client || !client->isConnected()) {
+        STX_LOGE(logger, "Not connected to IB TWS. Attempting to reconnect...");
+        reconnect();
+        if (!client || !client->isConnected()) {
+            STX_LOGE(logger, "Reconnection failed. Cannot request L2 data.");
+            return false;
+        }
+    }
+
     STX_LOGD(logger, "Requesting L2 data for contract: " + contract.symbol + " with numRows=" + std::to_string(numRows)
               + ", isSmartDepth=" + std::to_string(isSmartDepth) + ", mktDepthOptions=[]");
 
-    // Convert mktDepthOptions to TagValueListSPtr
     TagValueListSPtr mktDepthOptionsPtr = std::make_shared<std::vector<std::shared_ptr<TagValue>>>();
     for (const auto& option : mktDepthOptions) {
         mktDepthOptionsPtr->push_back(std::make_shared<TagValue>(option));
     }
 
-    // Request market depth data (L2)
-    client->reqMktDepth(++requestId, contract, numRows, isSmartDepth, mktDepthOptionsPtr);
+    int l2RequestId = ++requestId;
+    client->reqMktDepth(l2RequestId, contract, numRows, isSmartDepth, mktDepthOptionsPtr);
 
-    // Wait for data to be received with a timeout
-    const int maxWaitTime = 10;  // Maximum wait time in seconds
+    const int maxWaitTime = 20;
     for (int i = 0; i < maxWaitTime; ++i) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         std::lock_guard<std::mutex> lock(dataMutex);
@@ -260,6 +232,7 @@ void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, co
         STX_LOGD(logger, "Received tick price: {\"TickerId\": " + std::to_string(tickerId) + ", \"Price\": " + std::to_string(price) + "}");
     }
 }
+
 void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
     std::lock_guard<std::mutex> lock(dataMutex);
     if (field == LAST_SIZE) {
@@ -271,16 +244,14 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
     std::lock_guard<std::mutex> lock(dataMutex);
 
-    // Ensure the rawL2Data vector is large enough
     if (position >= rawL2Data.size()) {
         rawL2Data.resize(position + 1);
     }
 
-    // Process the operation
     switch (operation) {
         case 0: // Insert
-            rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
-            STX_LOGD(logger, "Inserted market depth: {\"TickerId\": " + std::to_string(id) + 
+            rawL2Data.insert(rawL2Data.begin() + position, {price, size, side == 0 ? "Buy" : "Sell"});
+            STX_LOGD(logger, "Market depth inserted: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Insert\"" + 
                      ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
@@ -289,7 +260,7 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
             break;
         case 1: // Update
             rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
-            STX_LOGD(logger, "Updated market depth: {\"TickerId\": " + std::to_string(id) + 
+            STX_LOGD(logger, "Market depth updated: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Update\"" + 
                      ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
@@ -297,8 +268,8 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
                      ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
             break;
         case 2: // Delete
-            rawL2Data[position] = {0.0, 0, ""}; // Clear the entry
-            STX_LOGD(logger, "Deleted market depth: {\"TickerId\": " + std::to_string(id) + 
+            rawL2Data[position] = {0.0, 0, ""};
+            STX_LOGD(logger, "Market depth deleted: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Delete\"" + 
                      ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
@@ -319,10 +290,7 @@ void RealTimeData::aggregateMinuteData() {
              ", Raw L2 Data count: " + std::to_string(rawL2Data.size()));
 
     if (l1Prices.empty() || l1Volumes.empty() || rawL2Data.empty()) {
-        STX_LOGW(logger, "Incomplete data. Skipping aggregation. L1 Prices empty: " + 
-                 std::to_string(l1Prices.empty()) + ", L1 Volumes empty: " + 
-                 std::to_string(l1Volumes.empty()) + ", Raw L2 Data empty: " + 
-                 std::to_string(rawL2Data.empty()));
+        STX_LOGW(logger, "Incomplete data. Skipping aggregation.");
         return;
     }
 
@@ -341,7 +309,6 @@ void RealTimeData::aggregateMinuteData() {
         }
 
         writeToSharedMemory(createCombinedJson(datetime, l1Data, l2Data, features));
-
         clearTemporaryData();
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error in aggregateMinuteData: " + std::string(e.what()));
@@ -381,12 +348,11 @@ json RealTimeData::aggregateL2Data() {
     }
 
     json l2DataJson = json::array();
-
     std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
     for (const auto& data : rawL2Data) {
         int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
-        bucketIndex = std::clamp(bucketIndex, 0, 19); // 防止越界
+        bucketIndex = std::clamp(bucketIndex, 0, 19);
 
         if (data.side == "Buy") {
             priceLevelBuckets[bucketIndex].first = DecimalFunctions::add(priceLevelBuckets[bucketIndex].first, data.volume);
@@ -476,7 +442,6 @@ void RealTimeData::clearTemporaryData() {
     rawL2Data.clear();
 }
 
-// 各种指标计算的具体实现
 double RealTimeData::calculateWeightedAveragePrice() {
     Decimal totalWeightedPrice = 0;
     Decimal totalVolume = 0;
@@ -600,29 +565,38 @@ void RealTimeData::error(int id, int errorCode, const std::string &errorString, 
         STX_LOGE(logger, "Advanced Order Reject JSON: " + advancedOrderRejectJson);
     }
 
-    // Handle specific error codes
     switch (errorCode) {
-        case 10090: // Request market data not subscribed
+        case 10090:
             STX_LOGE(logger, "Market data subscription required for symbol. Check your IB account permissions.");
             break;
-        case 200: // No security definition has been found for the request
+        case 200:
             STX_LOGE(logger, "Invalid contract specification. Check the contract details.");
             break;
-        case 1100: // Connection lost
-        case 1101: // Connection reset
-        case 1102: // Connection restored
+        case 1100:
+        case 1101:
+        case 1102:
             handleConnectionError(errorCode);
             break;
-        case 2104: // Market data farm connection is OK
-        case 2106: // HMDS data farm connection is OK
+        case 2104:
+        case 2106:
             STX_LOGI(logger, "Data farm connection restored: " + errorString);
             break;
-        case 2105: // HMDS data farm connection is broken
-        case 2107: // HMDS data farm connection is broken
+        case 2105:
+        case 2107:
             STX_LOGW(logger, "Data farm connection lost: " + errorString);
             break;
-        case 509: // Max rate of requests exceeded
+        case 509:
             handleRateLimitExceeded();
+            break;
+        case 2152:
+            STX_LOGE(logger, "Additional market data permissions required. Check your IB account permissions.");
+            break;
+        case 322:
+            STX_LOGE(logger, "Duplicate ticker id. Ensure unique ticker ids for each request.");
+            break;
+        case 504:
+            STX_LOGE(logger, "Not connected. Attempting to reconnect...");
+            reconnect();
             break;
         default:
             STX_LOGW(logger, "Unhandled error code: " + std::to_string(errorCode) + ", additional info: " + advancedOrderRejectJson);
@@ -633,7 +607,7 @@ void RealTimeData::error(int id, int errorCode, const std::string &errorString, 
 void RealTimeData::handleConnectionError(int errorCode) {
     if (errorCode == 1102) {
         STX_LOGI(logger, "IB TWS reconnected successfully.");
-        requestData(3, 2000); // Re-request market data
+        requestData();
     } else {
         STX_LOGE(logger, "IB TWS connection issue, attempting to reconnect...");
         reconnect();
@@ -643,11 +617,10 @@ void RealTimeData::handleConnectionError(int errorCode) {
 void RealTimeData::handleRateLimitExceeded() {
     STX_LOGW(logger, "Max number of requests exceeded, implementing backoff strategy.");
     
-    // Implement exponential backoff
     static int backoffAttempt = 0;
     int delaySeconds = std::pow(2, backoffAttempt);
     
-    if (delaySeconds > 300) {  // Cap at 5 minutes
+    if (delaySeconds > 300) {
         delaySeconds = 300;
     }
     
@@ -655,9 +628,6 @@ void RealTimeData::handleRateLimitExceeded() {
     std::this_thread::sleep_for(std::chrono::seconds(delaySeconds));
     
     backoffAttempt++;
-    
-    // Reset backoff attempt after a successful request
-    // This should be done in the method that makes successful requests
 }
 
 void RealTimeData::reconnect() {
@@ -692,4 +662,58 @@ void RealTimeData::checkDataHealth() {
     } else {
         STX_LOGI(logger, "L2 data is present. Number of entries: " + std::to_string(rawL2Data.size()));
     }
+}
+
+void RealTimeData::initializeSharedMemory() {
+    STX_LOGI(logger, "Initializing shared memory...");
+    boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
+    shm = boost::interprocess::shared_memory_object(boost::interprocess::create_only, SHARED_MEMORY_NAME, boost::interprocess::read_write);
+    shm.truncate(SHARED_MEMORY_SIZE);
+    region = boost::interprocess::mapped_region(shm, boost::interprocess::read_write);
+    STX_LOGI(logger, "Shared memory initialized successfully.");
+}
+
+void RealTimeData::processData() {
+    while (running) {
+        auto now = std::chrono::system_clock::now();
+        auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
+        std::this_thread::sleep_until(nextMinute);
+        aggregateMinuteData();
+        checkDataHealth();
+    }
+}
+
+void RealTimeData::monitorConnectivity() {
+    while (running) {
+        std::this_thread::sleep_for(std::chrono::seconds(10));
+        if (!client || !client->isConnected()) {
+            STX_LOGW(logger, "Connection lost. Attempting to reconnect...");
+            reconnect();
+        }
+    }
+}
+
+void RealTimeData::joinThreads() {
+    if (processDataThread.joinable()) {
+        processDataThread.join();
+        STX_LOGI(logger, "processDataThread joined successfully");
+    }
+    if (readerThread.joinable()) {
+        readerThread.join();
+        STX_LOGI(logger, "readerThread joined successfully");
+    }
+    if (connectivityThread.joinable()) {
+        connectivityThread.join();
+        STX_LOGI(logger, "connectivityThread joined successfully");
+    }
+}
+
+Contract RealTimeData::createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency) {
+    Contract contract;
+    contract.symbol = symbol;
+    contract.secType = secType;
+    contract.exchange = exchange;
+    contract.primaryExchange = exchange;
+    contract.currency = currency;
+    return contract;
 }

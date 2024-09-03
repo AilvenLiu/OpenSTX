@@ -56,7 +56,7 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     oss << std::put_time(&ny_time, "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
-    STX_LOGW(logger, "Current New York Time: " + datetime);
+    STX_LOGD(logger, "Current New York Time: " + datetime);
 
     return open && !weekend;
 }
