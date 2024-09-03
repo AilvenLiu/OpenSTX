@@ -56,7 +56,7 @@ public:
     RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
     ~RealTimeData();
 
-    void start();
+    bool start();
     void stop();
     inline const bool isConnected() const { return connected; }
 

@@ -30,7 +30,7 @@ using json = nlohmann::json;
 
 constexpr const char* IB_HOST = "127.0.0.1";
 constexpr int IB_PORT = 7496;
-constexpr int IB_CLIENT_ID = 1;
+constexpr int IB_CLIENT_ID = 0;
 constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
 constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
@@ -91,14 +91,14 @@ bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
     return false;
 }
 
-void RealTimeData::start() {
+bool RealTimeData::start() {
     STX_LOGD(logger, "Attempting to acquire clientMutex in start");
     {
         std::lock_guard<std::mutex> lock(clientMutex);
         STX_LOGD(logger, "Acquired clientMutex in start");
         if (running) {
             STX_LOGI(logger, "RealTimeData is already running.");
-            return;
+            return true; // Already running, so consider it a success
         }
         STX_LOGI(logger, "Starting RealTimeData collection...");
         running = true;
@@ -106,16 +106,24 @@ void RealTimeData::start() {
 
     if (!connected && !connectToIB()) {
         STX_LOGE(logger, "Failed to connect to IB TWS.");
-        return;
+        running = false; // Reset running flag
+        return false;
     }
 
-    initializeSharedMemory();
-    requestData();
+    try {
+        initializeSharedMemory();
+        requestData();
 
-    processDataThread = std::thread(&RealTimeData::processData, this);
-    connectivityThread = std::thread(&RealTimeData::monitorConnectivity, this);
+        processDataThread = std::thread(&RealTimeData::processData, this);
+        connectivityThread = std::thread(&RealTimeData::monitorConnectivity, this);
 
-    STX_LOGI(logger, "RealTimeData collection started successfully.");
+        STX_LOGI(logger, "RealTimeData collection started successfully.");
+        return true;
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Exception in start: " + std::string(e.what()));
+        running = false; // Reset running flag
+        return false;
+    }
 }
 
 void RealTimeData::stop() {

@@ -136,22 +136,20 @@ int main(int argc, char* argv[]) {
 
                 STX_LOGI(logger, "Market opening, starting RealTimeData collection.");
                 
-                dataCollector->start();
-
-                if (!dataCollector->isConnected()) {
-                    STX_LOGI(logger, "RealTimeData collection active during market hours.");
-                    
-                    // Collect data while market is open
-                    while (isMarketOpenTime(logger) && running.load()) {
-                        std::unique_lock<std::mutex> lock(cvMutex);
-                        cv.wait_for(lock, std::chrono::seconds(10), [] { return !running.load(); });
-                    }
-
-                    STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
-                } else {
+                if (!dataCollector->start()) {
                     STX_LOGE(logger, "Failed to start RealTimeData collection.");
+                    continue; // Skip the rest of the loop and retry
                 }
 
+                STX_LOGI(logger, "RealTimeData collection active during market hours.");
+                
+                // Collect data while market is open
+                while (isMarketOpenTime(logger) && running.load()) {
+                    std::unique_lock<std::mutex> lock(cvMutex);
+                    cv.wait_for(lock, std::chrono::seconds(10), [] { return !running.load(); });
+                }
+
+                STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
                 dataCollector->stop();
 
                 // Wait a bit before checking market status again
