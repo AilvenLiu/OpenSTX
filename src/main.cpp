@@ -127,7 +127,7 @@ int main(int argc, char* argv[]) {
         while (running.load()) {
             try {
                 // Wait for market to open
-                while (isMarketOpenTime(logger) && running.load()) {
+                while (!isMarketOpenTime(logger) && running.load()) {
                     std::unique_lock<std::mutex> lock(cvMutex);
                     cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
                 }
@@ -138,11 +138,11 @@ int main(int argc, char* argv[]) {
                 
                 dataCollector->start();
 
-                if (dataCollector->isConnected()) {
+                if (!dataCollector->isConnected()) {
                     STX_LOGI(logger, "RealTimeData collection active during market hours.");
                     
                     // Collect data while market is open
-                    while (!isMarketOpenTime(logger) && running.load()) {
+                    while (isMarketOpenTime(logger) && running.load()) {
                         std::unique_lock<std::mutex> lock(cvMutex);
                         cv.wait_for(lock, std::chrono::seconds(10), [] { return !running.load(); });
                     }
@@ -170,7 +170,7 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::seconds(30));
         while (running.load()) {
             try {
-                if (isMarketOpenTime(logger)) {
+                if (!isMarketOpenTime(logger)) {
                     historicalDataFetcher->fetchAndProcessDailyData("ALL", "10 Y", true);
                     STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
                     for (int i = 0; i < 60 && running.load(); ++i) {
@@ -180,7 +180,7 @@ int main(int argc, char* argv[]) {
                 } else {
                     STX_LOGI(logger, "Market is open. Historical data fetch paused.");
                     // Sleep until market closes
-                    while (!isMarketOpenTime(logger) && running.load()) {
+                    while (isMarketOpenTime(logger) && running.load()) {
                         std::unique_lock<std::mutex> lock(cvMutex);
                         cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
                     }
