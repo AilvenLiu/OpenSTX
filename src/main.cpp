@@ -26,6 +26,8 @@
 #include <filesystem>
 #include <memory>
 #include <atomic>
+#include <csignal>
+#include <condition_variable>
 
 #include "RealTimeData.hpp"
 #include "DailyDataFetcher.hpp"
@@ -34,10 +36,13 @@
 #include "Config.hpp"
 
 std::atomic<bool> running(true);
+std::condition_variable cv;
+std::mutex cvMutex;
 
 void signalHandler(int signum) {
     std::cout << "\nInterrupt signal (" << signum << ") received.\n";
     running.store(false);
+    cv.notify_all();
 }
 
 bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
@@ -49,20 +54,33 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     tzset();
     localtime_r(&utc_time, &ny_time);
 
-    bool open = (ny_time.tm_hour > 9 && ny_time.tm_hour < 16) || (ny_time.tm_hour == 9 && ny_time.tm_min >= 25);
+    bool open = (ny_time.tm_hour > 7 && ny_time.tm_hour < 20);
     bool weekend = (ny_time.tm_wday == 0 || ny_time.tm_wday == 6);
 
     std::ostringstream oss;
     oss << std::put_time(&ny_time, "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
-    STX_LOGW(logger, "Current New York Time: " + datetime);
+    STX_LOGD(logger, "Current New York Time: " + datetime);
 
     return open && !weekend;
 }
 
-int main() {
-    signal(SIGINT, signalHandler);
+int main(int argc, char* argv[]) {
+    // Register signal handler
+    std::signal(SIGINT, signalHandler);
+
+    LogLevel logLevel = INFO;  // Default log level
+
+    if (argc >= 2) {
+        std::string logLevelStr = argv[1];
+        try {
+            logLevel = Logger::stringToLogLevel(logLevelStr);
+        } catch (const std::invalid_argument& e) {
+            std::cerr << "Invalid log level: " << logLevelStr << std::endl;
+            return 1;
+        }
+    }
 
     std::string logDir = "logs";
     if (!std::filesystem::exists(logDir)) {
@@ -76,7 +94,7 @@ int main() {
     std::string timestamp = oss.str();
 
     std::string logFilePath = "logs/OpenSTX_" + timestamp + ".log";
-    auto logger = std::make_shared<Logger>(logFilePath);
+    auto logger = std::make_shared<Logger>(logFilePath, logLevel);
     STX_LOGI(logger, "Start main");
 
     std::shared_ptr<TimescaleDB> timescaleDB;
@@ -110,37 +128,38 @@ int main() {
             try {
                 // Wait for market to open
                 while (!isMarketOpenTime(logger) && running.load()) {
-                    std::this_thread::sleep_for(std::chrono::minutes(1));
+                    std::unique_lock<std::mutex> lock(cvMutex);
+                    cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
                 }
 
                 if (!running.load()) continue;
 
                 STX_LOGI(logger, "Market opening, starting RealTimeData collection.");
                 
-                dataCollector->start();
-
-                if (dataCollector->isConnected()) {
-                    STX_LOGI(logger, "RealTimeData collection active during market hours.");
-                    
-                    // Collect data while market is open
-                    while (isMarketOpenTime(logger) && running.load()) {
-                        // Here you might want to add any periodic checks or operations
-                        std::this_thread::sleep_for(std::chrono::seconds(10));
-                    }
-
-                    STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
-                } else {
+                if (!dataCollector->start()) {
                     STX_LOGE(logger, "Failed to start RealTimeData collection.");
+                    continue; // Skip the rest of the loop and retry
                 }
 
+                STX_LOGI(logger, "RealTimeData collection active during market hours.");
+                
+                // Collect data while market is open
+                while (isMarketOpenTime(logger) && running.load()) {
+                    std::unique_lock<std::mutex> lock(cvMutex);
+                    cv.wait_for(lock, std::chrono::seconds(10), [] { return !running.load(); });
+                }
+
+                STX_LOGI(logger, "Market closed, stopping RealTimeData collection.");
                 dataCollector->stop();
 
                 // Wait a bit before checking market status again
-                std::this_thread::sleep_for(std::chrono::minutes(1));
+                std::unique_lock<std::mutex> lock(cvMutex);
+                cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
 
             } catch (const std::exception &e) {
                 STX_LOGE(logger, "Exception caught in realTimeDataThread: " + std::string(e.what()));
-                std::this_thread::sleep_for(std::chrono::minutes(1));
+                std::unique_lock<std::mutex> lock(cvMutex);
+                cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
             }
         }
     });
@@ -150,20 +169,24 @@ int main() {
         while (running.load()) {
             try {
                 if (!isMarketOpenTime(logger)) {
-                    historicalDataFetcher->fetchAndProcessDailyData("SPY", "3 Y", true);
+                    historicalDataFetcher->fetchAndProcessDailyData("ALL", "10 Y", true);
                     STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
                     for (int i = 0; i < 60 && running.load(); ++i) {
-                        std::this_thread::sleep_for(std::chrono::minutes(1));
+                        std::unique_lock<std::mutex> lock(cvMutex);
+                        cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
                     }
                 } else {
                     STX_LOGI(logger, "Market is open. Historical data fetch paused.");
-                    for (int i = 0; i < 60 && running.load(); ++i) {
-                        std::this_thread::sleep_for(std::chrono::minutes(1));
+                    // Sleep until market closes
+                    while (isMarketOpenTime(logger) && running.load()) {
+                        std::unique_lock<std::mutex> lock(cvMutex);
+                        cv.wait_for(lock, std::chrono::minutes(1), [] { return !running.load(); });
                     }
                 }
             } catch (const std::exception &e) {
                 STX_LOGE(logger, "Exception caught in historicalDataThread: " + std::string(e.what()));
-                std::this_thread::sleep_for(std::chrono::minutes(5));
+                std::unique_lock<std::mutex> lock(cvMutex);
+                cv.wait_for(lock, std::chrono::minutes(5), [] { return !running.load(); });
             }
         }
     });
@@ -176,7 +199,6 @@ int main() {
 
     dataCollector->stop(); 
     historicalDataFetcher->stop();
-    boost::interprocess::shared_memory_object::remove("RealTimeData");
 
     if (realTimeDataThread.joinable()) realTimeDataThread.join();
     if (historicalDataThread.joinable()) historicalDataThread.join();

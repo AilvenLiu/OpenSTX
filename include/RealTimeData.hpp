@@ -37,28 +37,17 @@
 #include <map>
 #include <set>
 #include <numeric>
+#include <condition_variable>
 #include <boost/interprocess/shared_memory_object.hpp>
 #include <boost/interprocess/mapped_region.hpp>
-
-// Include necessary headers for IB API types
 #include "EClientSocket.h"
 #include "EWrapper.h"
 #include "Decimal.h"
-#include "FamilyCode.h"
-#include "PriceIncrement.h"
-#include "HistoricalSession.h"
-#include "SoftDollarTier.h"
-#include "NewsProvider.h"
-#include "DepthMktDataDescription.h"
-#include "HistoricalTick.h"
-#include "HistoricalTickBidAsk.h"
-#include "HistoricalTickLast.h"
-#include "EReader.h"
-#include "EReaderOSSignal.h"
-
 #include "nlohmann/json.hpp"
 #include "Logger.hpp"
 #include "TimescaleDB.hpp"
+#include "EReaderOSSignal.h" // Include the header for EReaderOSSignal
+#include "EReader.h" // Include the header for EReader
 
 using json = nlohmann::json;
 
@@ -67,17 +56,17 @@ public:
     RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db);
     ~RealTimeData();
 
-    void start();
+    bool start();
     void stop();
-
-    inline const bool isConnected() const {return connected;}
+    inline const bool isConnected() const { return connected; }
 
 private:
     struct L2DataPoint {
         double price;
         Decimal volume;
         std::string side; // "Buy" or "Sell"
-        
+
+        L2DataPoint() : price(0.0), volume(0), side("") {}
         L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
     };
 
@@ -95,7 +84,7 @@ private:
 
     std::thread readerThread;
     std::thread processDataThread;
-    std::thread connectionCheckThread;
+    std::thread monitorDataFlowThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
@@ -106,116 +95,107 @@ private:
     std::mutex dataMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
+    std::mutex connectionMutex;
+    std::mutex cvMutex;
+    std::condition_variable cv;
 
-    static constexpr const char* IB_HOST = "127.0.0.1";
-    static constexpr int IB_PORT = 7496;
-    static constexpr int IB_CLIENT_ID = 0;
-    static constexpr const char* SHARED_MEMORY_NAME = "RealTimeData";
-    static constexpr size_t SHARED_MEMORY_SIZE = 4096;
+    bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
+    void initializeSharedMemory();
 
-    bool connectToIB(int maxRetries, int retryDelayMs);
-    void reconnect();
-    void requestData(int maxRetries, int retryDelayMs);
-    void requestMarketDepth();
+    void requestData(int maxRetries = 3, int retryDelayMs = 2000);
+    void requestL1Data(int l1RequestId, const Contract& contract);
+    void requestL2Data(int l2RequestID, const Contract& contract);
+    void processData();
     void aggregateMinuteData();
-    void writeToSharedMemory(const std::string &data);
-    void processL2Data(int position, double price, Decimal size, int side);
-    void handleConnectionError(int errorCode);
-    void handleRateLimitExceeded();
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
-
     json aggregateL1Data();
     json aggregateL2Data();
+    Contract createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency);
+
+    void handleConnectionError(int errorCode);
+    void handleRateLimitExceeded();
+
     json calculateFeatures(const json& l1Data, const json& l2Data);
     std::string getCurrentDateTime() const;
-    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
     std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
+    void writeToSharedMemory(const std::string &data);
+    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    
     void clearTemporaryData();
     void checkDataHealth();
+    void reconnect();
+    void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
+    void joinThreads();
 
-    // 计算指标的方法
-    double calculateWeightedAveragePrice();
-    double calculateBuySellRatio();
-    Decimal calculateDepthChange();
-    double calculatePriceMomentum();
-    double calculateTradeDensity();
-    double calculateRSI();
-    double calculateMACD();
-    double calculateEMA(int period);
-    double calculateVWAP();
-
-    // EWrapper接口方法
+    double calculateWeightedAveragePrice() const;
+    double calculateBuySellRatio() const;
+    Decimal calculateDepthChange() const;
+    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const;
+    double calculatePriceMomentum() const;
+    double calculateTradeDensity() const;
+    double calculateRSI() const;
+    double calculateMACD() const;
+    double calculateEMA(int period) const;
+    double calculateVWAP() const;
+    
+    // EWrapper interface methods
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
     void tickSize(TickerId tickerId, TickType field, Decimal size) override;
     void updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) override;
     void error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) override;
     void nextValidId(OrderId orderId) override;
-
-    // Unused EWrapper methods, implement to avoid a pure virtual class
-    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
-
+    
 private:
     // Unused EWrapper methods, implement to avoid a pure virtual class
-    void tickOptionComputation( TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta,
-        double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
+    void updateMktDepthL2(TickerId id, int position, const std::string &marketMaker, int operation, int side, double price, Decimal size, bool isSmartDepth) override {}
+    void tickOptionComputation(TickerId tickerId, TickType tickType, int tickAttrib, double impliedVol, double delta, double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) override {}
     void tickGeneric(TickerId tickerId, TickType tickType, double value) override {}
     void tickString(TickerId tickerId, TickType tickType, const std::string& value) override {}
-    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
-        double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact, double dividendsToLastTradeDate) override {}
-    void orderStatus( OrderId orderId, const std::string& status, Decimal filled,
-        Decimal remaining, double avgFillPrice, int permId, int parentId,
-        double lastFillPrice, int clientId, const std::string& whyHeld, double mktCapPrice) override {}
-    void openOrder( OrderId orderId, const Contract&, const Order&, const OrderState&) override {}
+    void tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints, double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact, double dividendsToLastTradeDate) override {}
+    void orderStatus(OrderId orderId, const std::string& status, Decimal filled, Decimal remaining, double avgFillPrice, int permId, int parentId, double lastFillPrice, int clientId, const std::string& whyHeld, double mktCapPrice) override {}
+    void openOrder(OrderId orderId, const Contract&, const Order&, const OrderState&) override {}
     void openOrderEnd() override {}
-    void winError( const std::string& str, int lastError) override {}
+    void winError(const std::string& str, int lastError) override {}
     void connectionClosed() override {}
-    void updateAccountValue(const std::string& key, const std::string& val,
-    const std::string& currency, const std::string& accountName) override {}
-    void updatePortfolio( const Contract& contract, Decimal position,
-        double marketPrice, double marketValue, double averageCost,
-        double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
+    void updateAccountValue(const std::string& key, const std::string& val, const std::string& currency, const std::string& accountName) override {}
+    void updatePortfolio(const Contract& contract, Decimal position, double marketPrice, double marketValue, double averageCost, double unrealizedPNL, double realizedPNL, const std::string& accountName) override {}
     void updateAccountTime(const std::string& timeStamp) override {}
     void accountDownloadEnd(const std::string& accountName) override {}
-    void contractDetails( int reqId, const ContractDetails& contractDetails) override {}
-    void bondContractDetails( int reqId, const ContractDetails& contractDetails) override {}
-    void contractDetailsEnd( int reqId) override {}
-    void execDetails( int reqId, const Contract& contract, const Execution& execution) override {}
-    void execDetailsEnd( int reqId) override {}
+    void contractDetails(int reqId, const ContractDetails& contractDetails) override {}
+    void bondContractDetails(int reqId, const ContractDetails& contractDetails) override {}
+    void contractDetailsEnd(int reqId) override {}
+    void execDetails(int reqId, const Contract& contract, const Execution& execution) override {}
+    void execDetailsEnd(int reqId) override {}
     void updateNewsBulletin(int msgId, int msgType, const std::string& newsMessage, const std::string& originExch) override {}
-    void managedAccounts( const std::string& accountsList) override {}
+    void managedAccounts(const std::string& accountsList) override {}
     void receiveFA(faDataType pFaDataType, const std::string& cxml) override {}
     void historicalData(TickerId reqId, const Bar& bar) override {}
     void historicalDataEnd(int reqId, const std::string& startDateStr, const std::string& endDateStr) override {}
     void scannerParameters(const std::string& xml) override {}
-    void scannerData(int reqId, int rank, const ContractDetails& contractDetails,
-        const std::string& distance, const std::string& benchmark, const std::string& projection,
-        const std::string& legsStr) override {}
+    void scannerData(int reqId, int rank, const ContractDetails& contractDetails, const std::string& distance, const std::string& benchmark, const std::string& projection, const std::string& legsStr) override {}
     void scannerDataEnd(int reqId) override {}
-    void realtimeBar(TickerId reqId, long time, double open, double high, double low, double close,
-        Decimal volume, Decimal wap, int count) override {}
+    void realtimeBar(TickerId reqId, long time, double open, double high, double low, double close, Decimal volume, Decimal wap, int count) override {}
     void currentTime(long time) override {}
     void fundamentalData(TickerId reqId, const std::string& data) override {}
     void deltaNeutralValidation(int reqId, const DeltaNeutralContract& deltaNeutralContract) override {}
-    void tickSnapshotEnd( int reqId) override {}
-    void marketDataType( TickerId reqId, int marketDataType) override {}
-    void commissionReport( const CommissionReport& commissionReport) override {}
-    void position( const std::string& account, const Contract& contract, Decimal position, double avgCost) override {}
+    void tickSnapshotEnd(int reqId) override {}
+    void marketDataType(TickerId reqId, int marketDataType) override {}
+    void commissionReport(const CommissionReport& commissionReport) override {}
+    void position(const std::string& account, const Contract& contract, Decimal position, double avgCost) override {}
     void positionEnd() override {}
-    void accountSummary( int reqId, const std::string& account, const std::string& tag, const std::string& value, const std::string& curency) override {}
-    void accountSummaryEnd( int reqId) override {}
-    void verifyMessageAPI( const std::string& apiData) override {}
-    void verifyCompleted( bool isSuccessful, const std::string& errorText) override {}
-    void displayGroupList( int reqId, const std::string& groups) override {}
-    void displayGroupUpdated( int reqId, const std::string& contractInfo) override {}
-    void verifyAndAuthMessageAPI( const std::string& apiData, const std::string& xyzChallange) override {}
-    void verifyAndAuthCompleted( bool isSuccessful, const std::string& errorText) override {}
+    void accountSummary(int reqId, const std::string& account, const std::string& tag, const std::string& value, const std::string& curency) override {}
+    void accountSummaryEnd(int reqId) override {}
+    void verifyMessageAPI(const std::string& apiData) override {}
+    void verifyCompleted(bool isSuccessful, const std::string& errorText) override {}
+    void displayGroupList(int reqId, const std::string& groups) override {}
+    void displayGroupUpdated(int reqId, const std::string& contractInfo) override {}
+    void verifyAndAuthMessageAPI(const std::string& apiData, const std::string& xyzChallange) override {}
+    void verifyAndAuthCompleted(bool isSuccessful, const std::string& errorText) override {}
     void connectAck() override {}
-    void positionMulti( int reqId, const std::string& account,const std::string& modelCode, const Contract& contract, Decimal pos, double avgCost) override {}
-    void positionMultiEnd( int reqId) override {}
-    void accountUpdateMulti( int reqId, const std::string& account, const std::string& modelCode, const std::string& key, const std::string& value, const std::string& currency) override {}
-    void accountUpdateMultiEnd( int reqId) override {}
-    void securityDefinitionOptionalParameter(int reqId, const std::string& exchange, int underlyingConId, const std::string& tradingClass,
-        const std::string& multiplier, const std::set<std::string>& expirations, const std::set<double>& strikes) override {}
+    void positionMulti(int reqId, const std::string& account, const std::string& modelCode, const Contract& contract, Decimal pos, double avgCost) override {}
+    void positionMultiEnd(int reqId) override {}
+    void accountUpdateMulti(int reqId, const std::string& account, const std::string& modelCode, const std::string& key, const std::string& value, const std::string& currency) override {}
+    void accountUpdateMultiEnd(int reqId) override {}
+    void securityDefinitionOptionalParameter(int reqId, const std::string& exchange, int underlyingConId, const std::string& tradingClass, const std::string& multiplier, const std::set<std::string>& expirations, const std::set<double>& strikes) override {}
     void securityDefinitionOptionalParameterEnd(int reqId) override {}
     void softDollarTiers(int reqId, const std::vector<SoftDollarTier> &tiers) override {}
     void familyCodes(const std::vector<FamilyCode> &familyCodes) override {}

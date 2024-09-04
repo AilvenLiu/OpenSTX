@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.DS_Store
 **/*.DS_Store
+conf/alicloud_db.ini
 
 # C extensions
 *.so

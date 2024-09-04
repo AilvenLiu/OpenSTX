@@ -109,9 +109,14 @@ bool DailyDataFetcher::connectToIB() {
 }
 
 void DailyDataFetcher::maintainConnection() {
-    while (shouldRun) {
-        reader->processMsgs();
-        osSignal->waitForSignal();
+    try {
+        while (shouldRun) {
+            reader->processMsgs();
+            osSignal->waitForSignal();
+        }
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Exception in maintainConnection: " + std::string(e.what()));
+        stop();
     }
 }
 
@@ -140,21 +145,18 @@ void DailyDataFetcher::stop() {
 }
 
 void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
-    STX_LOGI(logger, "Fetching and processing historical data for symbol: " + symbol);
-
-    std::string endDateTime = getCurrentDate();
-    std::string startDateTime = incremental ? db->getLastDailyEndDate(symbol) : calculateStartDateFromDuration(duration);
-    if (startDateTime.empty()) {
-        startDateTime = calculateStartDateFromDuration("3 Y");  // Default to 3 years if no data
+    std::vector<std::string> symbols;
+    if (symbol == "ALL") {
+        symbols = {"SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"};
+    } else {
+        symbols.push_back(symbol);
     }
-
-    auto dateRanges = splitDateRange(startDateTime, endDateTime);
 
     int retryCount = 0;
     const int maxRetries = 3;
 
     while (retryCount < maxRetries) {
-        if (!connectToIB()) {
+        if (!connected && !connectToIB()) {
             STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
             retryCount++;
             std::this_thread::sleep_for(std::chrono::seconds(5));
@@ -164,15 +166,44 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         running = true;
         bool success = true;
 
-        for (const auto& range : dateRanges) {
+        for (const auto& sym : symbols) {
             if (!running) break;
 
-            if (!requestAndProcessMonthlyData(symbol, range.first, range.second)) {
-                success = false;
-                break;
+            STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
+
+            std::string endDateTime = getCurrentDate();
+            std::string startDateTime;
+
+            if (incremental) {
+                std::string lastDate = db->getLastDailyEndDate(sym);
+                std::string firstDate = db->getFirstDailyStartDate(sym);
+                std::string tenYearsAgo = calculateStartDateFromDuration("10 Y");
+                
+                if (firstDate.empty() || firstDate > tenYearsAgo) {
+                    startDateTime = tenYearsAgo;
+                } else {
+                    startDateTime = lastDate;
+                }
+            } else {
+                startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
             }
 
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            auto dateRanges = splitDateRange(startDateTime, endDateTime);
+
+            for (const auto& range : dateRanges) {
+                if (!running) break;
+
+                if (!requestAndProcessMonthlyData(sym, range.first, range.second)) {
+                    success = false;
+                    break;
+                }
+
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+            }
+
+            if (!success) break;
+            
+            STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
         }
 
         if (success) {
@@ -181,15 +212,16 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             retryCount++;
             STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
             std::this_thread::sleep_for(std::chrono::seconds(5));
+            // Disconnect and reset connection state before retrying
+            stop();
         }
     }
 
     stop();
-    STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + symbol);
 }
 
 bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
-    STX_LOGI(logger, "Requesting monthly data for " + symbol + " from " + startDate + " to " + endDate);
+    STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
 
     if (!requestDailyData(symbol, startDate, endDate, "1 day")) {
         return false;
@@ -311,17 +343,23 @@ void DailyDataFetcher::nextValidId(OrderId orderId) {
 }
 
 void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
-    std::string date = std::get<std::string>(historicalData.at("date"));
-    
+    std::string date;
+    try {
+        date = std::get<std::string>(historicalData.at("date"));
+    } catch (const std::out_of_range& e) {
+        STX_LOGE(logger, "Missing 'date' field in historical data for symbol: " + symbol);
+        return;
+    }
+
     std::map<std::string, std::variant<double, std::string>> dbData;
     dbData["symbol"] = symbol;
 
     // Required fields from IB API
     const std::vector<std::string> requiredFields = {"open", "high", "low", "close", "volume"};
     for (const auto& field : requiredFields) {
-        if (historicalData.find(field) != historicalData.end()) {
+        try {
             dbData[field] = std::get<double>(historicalData.at(field));
-        } else {
+        } catch (const std::out_of_range& e) {
             STX_LOGE(logger, "Missing required field: " + field + " for " + symbol + " on " + date);
             return;  // Skip this data point if a required field is missing
         }
@@ -353,7 +391,7 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
     // Store data in the database
-    if (db->insertDailyData(date, dbData)) {
+    if (db->insertOrUpdateDailyData(date, dbData)) {
         STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
     } else {
         STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);

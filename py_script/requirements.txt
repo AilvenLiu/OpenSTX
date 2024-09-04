@@ -1,0 +1,8 @@
+pandas
+scikit-learn
+xgboost
+lightgbm
+torch
+ib_insync
+numpy
+configparser
