@@ -1,0 +1,124 @@
+{
+    "L1": {
+        "Low": 552.6,
+        "High": 552.8,
+        "Open": 552.6,
+        "Close": 552.8,
+        "Volume": "+2300000000000000E-12"
+    },
+    "L2": {
+        [
+            {
+                "Price": 552.1030000000001,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+8000000000000000E-13"
+            },
+            {
+                "Price": 552.1690000000001,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+1900000000000000E-11"
+            },
+            {
+                "Price": 552.235,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+4700000000000000E-12"
+            },
+            {
+                "Price": 552.301,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+4800000000000000E-12"
+            },
+            {
+                "Price": 552.3670000000001,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+5100000000000000E-12"
+            },
+            {
+                "Price": 552.433,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+7900000000000000E-12"
+            },
+            {
+                "Price": 552.499,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+6500000000000000E-12"
+            },
+            {
+                "Price": 552.565,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+5000000000000000E-12"
+            },
+            {
+                "Price": 552.631,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+1900000000000000E-12"
+            },
+            {
+                "Price": 552.697,
+                "BuyVolume": "+0E-398",
+                "SellVolume": "+8000000000000000E-13"
+            },
+            {
+                "Price": 552.763,
+                "BuyVolume": "+1000000000000000E-13",
+                "SellVolume": "+6000000000000000E-13"
+            },
+            {
+                "Price": 552.8290000000001,
+                "BuyVolume": "+3900000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 552.895,
+                "BuyVolume": "+7800000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 552.961,
+                "BuyVolume": "+7100000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.027,
+                "BuyVolume": "+1460000000000000E-11",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.093,
+                "BuyVolume": "+3100000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.159,
+                "BuyVolume": "+5200000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.225,
+                "BuyVolume": "+3020000000000000E-11",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.2909999999999,
+                "BuyVolume": "+3200000000000000E-12",
+                "SellVolume": "+0E-398"
+            },
+            {
+                "Price": 553.357,
+                "BuyVolume": "+7000000000000000E-13",
+                "SellVolume": "+0E-398"
+            }
+        ]
+    },
+    "feature": {
+        "RSI": 83.33333333331439,
+        "MACD": 0.0,
+        "VWAP": 552.62,
+        "DepthChange": "+1880000000000000E-11",
+        "BuySellRatio": 1.329246935201401,
+        "TradeDensity": 383.3333333333333,
+        "PriceMomentum": 0.1999999999999318,
+        "ImpliedLiquidity": 114.99999425000028,
+        "WeightedAvgPrice": 552.6078260869565
+    }
+}

@@ -89,15 +89,20 @@ private:
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
     std::vector<L2DataPoint> rawL2Data;
+    std::vector<double> l1PricesBuffer;
+    std::vector<Decimal> l1VolumesBuffer;
+    std::vector<L2DataPoint> rawL2DataBuffer;
 
-    boost::interprocess::shared_memory_object shm;
-    boost::interprocess::mapped_region region;
+    std::condition_variable cv;
     std::mutex dataMutex;
+    std::mutex bufferMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
     std::mutex connectionMutex;
     std::mutex cvMutex;
-    std::condition_variable cv;
+
+    boost::interprocess::shared_memory_object shm;
+    boost::interprocess::mapped_region region;
 
     bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
     void initializeSharedMemory();
@@ -120,8 +125,9 @@ private:
     void writeToSharedMemory(const std::string &data);
     bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
     
+    void swapBuffers();
+    void clearBufferData();
     void clearTemporaryData();
-    void checkDataHealth();
     void reconnect();
     void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
     void joinThreads();
