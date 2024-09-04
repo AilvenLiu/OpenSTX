@@ -116,7 +116,7 @@ bool RealTimeData::start() {
         requestData();
 
         processDataThread = std::thread(&RealTimeData::processData, this);
-        connectivityThread = std::thread(&RealTimeData::monitorConnectivity, this);
+        monitorDataFlowThread = std::thread(&RealTimeData::monitorDataFlow, this, 3, 1000, 5000);
 
         STX_LOGI(logger, "RealTimeData collection started successfully.");
         return true;
@@ -683,13 +683,21 @@ void RealTimeData::processData() {
     }
 }
 
-void RealTimeData::monitorConnectivity() {
+void RealTimeData::monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs) {
     while (running) {
-        std::this_thread::sleep_for(std::chrono::seconds(10));
-        if (!client || !client->isConnected()) {
-            STX_LOGW(logger, "Connection lost. Attempting to reconnect...");
-            reconnect();
+        {
+            std::lock_guard<std::mutex> lock(connectionMutex);
+            if (!client || !client->isConnected()) {
+                STX_LOGW(logger, "Connection lost. Attempting to reconnect...");
+                if (!connectToIB(maxRetries, retryDelayMs)) {
+                    STX_LOGE(logger, "Failed to reconnect to IB TWS.");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(checkIntervalMs));
+                    continue;
+                }
+                requestData(maxRetries, retryDelayMs);
+            }
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(checkIntervalMs));
     }
 }
 
@@ -697,8 +705,8 @@ void RealTimeData::joinThreads() {
     processDataThread.join();
     STX_LOGI(logger, "processDataThread joined successfully");
 
-    connectivityThread.join();
-    STX_LOGI(logger, "connectivityThread joined successfully");
+    monitorDataFlowThread.join();
+    STX_LOGI(logger, "monitorDataFlowThread joined successfully");
 
     readerThread.join();
     STX_LOGI(logger, "readerThread joined successfully");    

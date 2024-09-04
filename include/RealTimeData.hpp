@@ -65,6 +65,7 @@ private:
         double price;
         Decimal volume;
         std::string side; // "Buy" or "Sell"
+
         L2DataPoint() : price(0.0), volume(0), side("") {}
         L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
     };
@@ -83,7 +84,7 @@ private:
 
     std::thread readerThread;
     std::thread processDataThread;
-    std::thread connectivityThread;
+    std::thread monitorDataFlowThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
@@ -99,26 +100,31 @@ private:
     std::condition_variable cv;
 
     bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
-    void reconnect();
+    void initializeSharedMemory();
+
     void requestData(int maxRetries = 3, int retryDelayMs = 2000);
     void requestL1Data(int l1RequestId, const Contract& contract);
     void requestL2Data(int l2RequestID, const Contract& contract);
-    bool requestL2DataHelper(const Contract& contract, int l2RequestId, int numRows, bool isSmartDepth, const std::vector<TagValue>& mktDepthOptions);
+    void processData();
     void aggregateMinuteData();
-    void writeToSharedMemory(const std::string &data);
-    void processL2Data(int position, double price, Decimal size, int side);
+    json aggregateL1Data();
+    json aggregateL2Data();
+    Contract createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency);
+
     void handleConnectionError(int errorCode);
     void handleRateLimitExceeded();
 
-
-    json aggregateL1Data();
-    json aggregateL2Data();
     json calculateFeatures(const json& l1Data, const json& l2Data);
     std::string getCurrentDateTime() const;
-    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
     std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
+    void writeToSharedMemory(const std::string &data);
+    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    
     void clearTemporaryData();
     void checkDataHealth();
+    void reconnect();
+    void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
+    void joinThreads();
 
     double calculateWeightedAveragePrice() const;
     double calculateBuySellRatio() const;
@@ -130,13 +136,7 @@ private:
     double calculateMACD() const;
     double calculateEMA(int period) const;
     double calculateVWAP() const;
-
-    void initializeSharedMemory();
-    void processData();
-    void monitorConnectivity();
-    void joinThreads();
-    Contract createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency);
-
+    
     // EWrapper interface methods
     void tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) override;
     void tickSize(TickerId tickerId, TickType field, Decimal size) override;
