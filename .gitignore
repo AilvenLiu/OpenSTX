@@ -11,6 +11,7 @@ conf/alicloud_db.ini
 
 # database
 db/*
+conf/*.ini
 
 # bin
 bin/*
