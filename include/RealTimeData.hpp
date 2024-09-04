@@ -109,7 +109,7 @@ private:
     void processL2Data(int position, double price, Decimal size, int side);
     void handleConnectionError(int errorCode);
     void handleRateLimitExceeded();
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount);
+
 
     json aggregateL1Data();
     json aggregateL2Data();
@@ -120,15 +120,16 @@ private:
     void clearTemporaryData();
     void checkDataHealth();
 
-    double calculateWeightedAveragePrice();
-    double calculateBuySellRatio();
-    Decimal calculateDepthChange();
-    double calculatePriceMomentum();
-    double calculateTradeDensity();
-    double calculateRSI();
-    double calculateMACD();
-    double calculateEMA(int period);
-    double calculateVWAP();
+    double calculateWeightedAveragePrice() const;
+    double calculateBuySellRatio() const;
+    Decimal calculateDepthChange() const;
+    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const;
+    double calculatePriceMomentum() const;
+    double calculateTradeDensity() const;
+    double calculateRSI() const;
+    double calculateMACD() const;
+    double calculateEMA(int period) const;
+    double calculateVWAP() const;
 
     void initializeSharedMemory();
     void processData();

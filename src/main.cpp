@@ -54,7 +54,7 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     tzset();
     localtime_r(&utc_time, &ny_time);
 
-    bool open = (ny_time.tm_hour > 9 && ny_time.tm_hour < 16) || (ny_time.tm_hour == 9 && ny_time.tm_min >= 25);
+    bool open = (ny_time.tm_hour > 7 && ny_time.tm_hour < 20);
     bool weekend = (ny_time.tm_wday == 0 || ny_time.tm_wday == 6);
 
     std::ostringstream oss;

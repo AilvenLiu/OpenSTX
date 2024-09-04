@@ -23,6 +23,7 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <future>
 #include <boost/circular_buffer.hpp>
 #include "RealTimeData.hpp"
 
@@ -264,8 +265,6 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
 }
 
 void RealTimeData::aggregateMinuteData() {
-    std::unique_lock<std::mutex> lock(dataMutex);
-
     STX_LOGI(logger, "Aggregating minute data. L1 Prices count: " + std::to_string(l1Prices.size()) + 
              ", L1 Volumes count: " + std::to_string(l1Volumes.size()) + 
              ", Raw L2 Data count: " + std::to_string(rawL2Data.size()));
@@ -277,13 +276,21 @@ void RealTimeData::aggregateMinuteData() {
     }
 
     try {
-        auto l1Data = aggregateL1Data();
-        auto l2Data = aggregateL2Data();
+        json l1Data, l2Data;
         
-        lock.unlock();
-        auto features = calculateFeatures(l1Data, l2Data);
-        lock.lock();
+        auto l1Future = std::async(std::launch::async, [this]() {
+            return this->aggregateL1Data();
+        });
 
+        auto l2Future = std::async(std::launch::async, [this]() {
+            return this->aggregateL2Data();
+        });
+
+        l1Data = l1Future.get();
+        l2Data = l2Future.get();
+        
+        auto features = calculateFeatures(l1Data, l2Data);
+        
         std::string datetime = getCurrentDateTime();
 
         if (!writeToDatabase(datetime, l1Data, l2Data, features)) {
@@ -357,16 +364,26 @@ json RealTimeData::aggregateL2Data() {
 }
 
 json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
-    double weightedAvgPrice = calculateWeightedAveragePrice();
-    double buySellRatio = calculateBuySellRatio();
-    Decimal depthChange = calculateDepthChange();
+    std::future<double> weightedAvgPriceFuture = std::async(std::launch::async, &RealTimeData::calculateWeightedAveragePrice, this);
+    std::future<double> buySellRatioFuture = std::async(std::launch::async, &RealTimeData::calculateBuySellRatio, this);
+    std::future<Decimal> depthChangeFuture = std::async(std::launch::async, &RealTimeData::calculateDepthChange, this);
     Decimal volume = DecimalFunctions::stringToDecimal(l1Data["Volume"].get<std::string>());
-    double impliedLiquidity = calculateImpliedLiquidity(DecimalFunctions::decimalToDouble(volume), l2Data.size());
-    double priceMomentum = calculatePriceMomentum();
-    double tradeDensity = calculateTradeDensity();
-    double rsi = calculateRSI();
-    double macd = calculateMACD();
-    double vwap = calculateVWAP();
+    std::future<double> impliedLiquidityFuture = std::async(std::launch::async, &RealTimeData::calculateImpliedLiquidity, this, DecimalFunctions::decimalToDouble(volume), l2Data.size());
+    std::future<double> priceMomentumFuture = std::async(std::launch::async, &RealTimeData::calculatePriceMomentum, this);
+    std::future<double> tradeDensityFuture = std::async(std::launch::async, &RealTimeData::calculateTradeDensity, this);
+    std::future<double> rsiFuture = std::async(std::launch::async, &RealTimeData::calculateRSI, this);
+    std::future<double> macdFuture = std::async(std::launch::async, &RealTimeData::calculateMACD, this);
+    std::future<double> vwapFuture = std::async(std::launch::async, &RealTimeData::calculateVWAP, this);
+
+    double weightedAvgPrice = weightedAvgPriceFuture.get();
+    double buySellRatio = buySellRatioFuture.get();
+    Decimal depthChange = depthChangeFuture.get();
+    double impliedLiquidity = impliedLiquidityFuture.get();
+    double priceMomentum = priceMomentumFuture.get();
+    double tradeDensity = tradeDensityFuture.get();
+    double rsi = rsiFuture.get();
+    double macd = macdFuture.get();
+    double vwap = vwapFuture.get();
 
     return {
         {"WeightedAvgPrice", weightedAvgPrice},
@@ -424,7 +441,7 @@ void RealTimeData::clearTemporaryData() {
     rawL2Data.clear();
 }
 
-double RealTimeData::calculateWeightedAveragePrice() {
+double RealTimeData::calculateWeightedAveragePrice() const {
     Decimal totalWeightedPrice = 0;
     Decimal totalVolume = 0;
     for (size_t i = 0; i < l1Prices.size(); ++i) {
@@ -434,7 +451,7 @@ double RealTimeData::calculateWeightedAveragePrice() {
     return totalVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalWeightedPrice, totalVolume));
 }
 
-double RealTimeData::calculateBuySellRatio() {
+double RealTimeData::calculateBuySellRatio() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
     for (const auto& level : rawL2Data) {
@@ -447,7 +464,7 @@ double RealTimeData::calculateBuySellRatio() {
     return totalSellVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalBuyVolume, totalSellVolume));
 }
 
-Decimal RealTimeData::calculateDepthChange() {
+Decimal RealTimeData::calculateDepthChange() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
 
@@ -462,22 +479,22 @@ Decimal RealTimeData::calculateDepthChange() {
     return DecimalFunctions::sub(totalBuyVolume, totalSellVolume);
 }
 
-double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) {
+double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const {
     return totalL2Volume / (priceLevelCount + 1e-6);
 }
 
-double RealTimeData::calculatePriceMomentum() {
+double RealTimeData::calculatePriceMomentum() const {
     if (l1Prices.size() < 2) return 0.0;
     return l1Prices.back() - l1Prices.front();
 }
 
-double RealTimeData::calculateTradeDensity() {
+double RealTimeData::calculateTradeDensity() const {
     if (l1Volumes.empty()) return 0.0;
     Decimal totalVolume = std::accumulate(l1Volumes.begin(), l1Volumes.end(), Decimal(0), DecimalFunctions::add);
     return DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalVolume, DecimalFunctions::doubleToDecimal(l1Volumes.size())));
 }
 
-double RealTimeData::calculateRSI() {
+double RealTimeData::calculateRSI() const {
     if (l1Prices.size() < 2) return 50.0;
 
     double gains = 0.0, losses = 0.0;
@@ -494,7 +511,7 @@ double RealTimeData::calculateRSI() {
     return 100.0 - (100.0 / (1.0 + rs));
 }
 
-double RealTimeData::calculateMACD() {
+double RealTimeData::calculateMACD() const {
     if (l1Prices.size() < 26) return 0.0;
 
     double shortEMA = calculateEMA(12);
@@ -503,7 +520,7 @@ double RealTimeData::calculateMACD() {
     return shortEMA - longEMA;
 }
 
-double RealTimeData::calculateEMA(int period) {
+double RealTimeData::calculateEMA(int period) const {
     if (l1Prices.size() < period) return l1Prices.back();
 
     double multiplier = 2.0 / (period + 1);
@@ -516,7 +533,7 @@ double RealTimeData::calculateEMA(int period) {
     return ema;
 }
 
-double RealTimeData::calculateVWAP() {
+double RealTimeData::calculateVWAP() const {
     if (l1Prices.empty() || l1Volumes.empty()) return 0.0;
 
     double cumulativePriceVolume = 0.0;
@@ -677,18 +694,14 @@ void RealTimeData::monitorConnectivity() {
 }
 
 void RealTimeData::joinThreads() {
-    if (processDataThread.joinable()) {
-        processDataThread.join();
-        STX_LOGI(logger, "processDataThread joined successfully");
-    }
-    if (connectivityThread.joinable()) {
-        connectivityThread.join();
-        STX_LOGI(logger, "connectivityThread joined successfully");
-    }
-    if (readerThread.joinable()) {
-        readerThread.join();
-        STX_LOGI(logger, "readerThread joined successfully");
-    }
+    processDataThread.join();
+    STX_LOGI(logger, "processDataThread joined successfully");
+
+    connectivityThread.join();
+    STX_LOGI(logger, "connectivityThread joined successfully");
+
+    readerThread.join();
+    STX_LOGI(logger, "readerThread joined successfully");    
 }
 
 Contract RealTimeData::createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency) {
