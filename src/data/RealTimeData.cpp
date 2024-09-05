@@ -220,7 +220,7 @@ void RealTimeData::requestL1Data(int l1RequestId, const Contract& contract) {
 void RealTimeData::requestL2Data(int l2RequestId, const Contract& contract) {
     STX_LOGD(logger, "Requesting L2 data with request ID: " + std::to_string(l2RequestId));
     TagValueListSPtr mktDepthOptionsPtr = std::make_shared<std::vector<std::shared_ptr<TagValue>>>();
-    client->reqMktDepth(l2RequestId, contract, 50, false, mktDepthOptionsPtr);
+    client->reqMktDepth(l2RequestId, contract, 60, false, mktDepthOptionsPtr);
 }
 
 void RealTimeData::tickPrice(TickerId tickerId, TickType field, double price, const TickAttrib &attrib) {
@@ -368,7 +368,7 @@ json RealTimeData::aggregateL2Data() {
     std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
     for (const auto& data : rawL2DataBuffer) {
-        if (data.side == "Deleted") continue; // Skip deleted entries
+        if (data.side == "Deleted" || data.price == 0.0) continue; // Skip deleted entries
         int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
         bucketIndex = std::clamp(bucketIndex, 0, 19);
 
