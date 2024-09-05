@@ -230,7 +230,7 @@ const std::string TimescaleDB::getLastDailyEndDate(const std::string &symbol) {
         if (!result.empty() && !result[0][0].is_null()) {
             std::string lastDate = result[0][0].as<std::string>();
             STX_LOGI(logger, "Last daily end date for " + symbol + ": " + lastDate);
-            return lastDate + " 23:59:59"; // Ensure we fetch new data starting from the next day
+            return lastDate; // Return the date as is
         }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error retrieving the last daily end date: " + std::string(e.what()));

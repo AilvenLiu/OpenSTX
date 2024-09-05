@@ -193,7 +193,7 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             for (const auto& range : dateRanges) {
                 if (!running) break;
 
-                if (!requestAndProcessMonthlyData(sym, range.first, range.second)) {
+                if (!requestAndProcessWeeklyData(sym, range.first, range.second)) {
                     success = false;
                     break;
                 }
@@ -220,7 +220,7 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     stop();
 }
 
-bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
+bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
     STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
 
     if (!requestDailyData(symbol, startDate, endDate, "1 day")) {
