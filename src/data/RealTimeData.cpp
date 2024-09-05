@@ -73,16 +73,19 @@ bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
             reader->start();
 
             readerThread = std::thread([this]() {
-                while (client->isConnected()) {
+                while (running.load() && client->isConnected()) {
                     osSignal->waitForSignal();
                     std::unique_lock<std::mutex> readerLock(readerMutex, std::defer_lock);
                     readerLock.lock();
+                    if (!running.load()) {
+                        break;
+                    }
                     reader->processMsgs();
                     readerLock.unlock();
                 }
             });
 
-            connected = true;
+            connected.store(true);
             connectionLock.unlock();
             return true;
         } catch (const std::exception &e) {
@@ -103,19 +106,19 @@ bool RealTimeData::start() {
     std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
     clientLock.lock();
     STX_LOGD(logger, "Acquired clientMutex in start");
-    if (running) {
+    if (running.load()) {
         STX_LOGI(logger, "RealTimeData is already running.");
         clientLock.unlock();
         return true; // Already running, so consider it a success
     }
     STX_LOGI(logger, "Starting RealTimeData collection...");
-    running = true;
+    running.store(true);
     clientLock.unlock();
 
-    if (!connected && !connectToIB()) {
+    if (!connected.load() && !connectToIB()) {
         STX_LOGE(logger, "Failed to connect to IB TWS.");
         clientLock.lock();
-        running = false; // Reset running flag
+        running.store(false);
         clientLock.unlock();
         return false;
     }
@@ -133,49 +136,47 @@ bool RealTimeData::start() {
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Exception in start: " + std::string(e.what()));
         clientLock.lock();
-        running = false; // Reset running flag
+        running.store(false);
         clientLock.unlock();
         return false;
     }
 }
 
 void RealTimeData::stop() {
-    STX_LOGD(logger, "Attempting to acquire clientMutex in stop");
-    std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
-    clientLock.lock();
-    STX_LOGD(logger, "Acquired clientMutex in stop");
-    if (!running) {
-        clientLock.unlock();
-        return;
-    }
-    running = false;
-    clientLock.unlock();
+    
+    running.store(false);
 
-    STX_LOGD(logger, "Attempting to acquire connectionMutex in stop");
-    std::unique_lock<std::mutex> connectionLock(connectionMutex, std::defer_lock);
-    connectionLock.lock();
-    STX_LOGD(logger, "Acquired connectionMutex in stop");
-    if (client && client->isConnected()) {
-        client->eDisconnect();
-        STX_LOGI(logger, "Disconnected from IB TWS");
-    }
-    connectionLock.unlock();
-
+    // Notify all threads to exit immediately
     {
         std::lock_guard<std::mutex> lock(cvMutex);
         cv.notify_all();
     }
+    
+    if (client && client->isConnected()) {
+        client->eDisconnect();
+        STX_LOGI(logger, "Disconnected from IB TWS");
+    }
 
     joinThreads();
-    boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
 
-    STX_LOGD(logger, "Attempting to acquire clientMutex in stop (cleanup)");
-    clientLock.lock();
-    STX_LOGD(logger, "Acquired clientMutex in stop (cleanup)");
-    client.reset();
-    reader.reset();
-    connected = false;
-    clientLock.unlock();
+    boost::interprocess::shared_memory_object::remove(SHARED_MEMORY_NAME);
+    STX_LOGI(logger, "shared memory removed sussessfully.");
+
+    if (client) {
+        client.reset();
+        STX_LOGI(logger, "client reset successfully.");
+    } else {
+        STX_LOGW(logger, "client was already nullptr.");
+    }
+    
+    if (reader) {
+        reader->stop();
+        STX_LOGD(logger, "reader stopped successfully.");
+    } else {
+        STX_LOGW(logger, "reader was already null.");
+    }
+    
+    connected.store(false);
 
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }
@@ -338,7 +339,7 @@ json RealTimeData::aggregateL1Data() {
         {"High", high},
         {"Low", low},
         {"Close", close},
-        {"Volume", DecimalFunctions::decimalToString(volume)} // Ensure volume is a string
+        {"Volume", DecimalFunctions::decimalToString(volume)}
     };
 }
 
@@ -383,8 +384,8 @@ json RealTimeData::aggregateL2Data() {
         double midPrice = minPrice + (i + 0.5) * interval;
         json level = {
             {"Price", midPrice},
-            {"BuyVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].first)},
-            {"SellVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].second)}
+            {"BuyVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].first)},
+            {"SellVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].second)}
         };
         l2DataJson.push_back(level);
     }
@@ -419,7 +420,7 @@ json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
     return {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
-        {"DepthChange", DecimalFunctions::decimalToString(depthChange)},
+        {"DepthChange", DecimalFunctions::decimalToDouble(depthChange)},
         {"ImpliedLiquidity", impliedLiquidity},
         {"PriceMomentum", priceMomentum},
         {"TradeDensity", tradeDensity},
@@ -438,7 +439,9 @@ std::string RealTimeData::getCurrentDateTime() const {
 }
 
 bool RealTimeData::writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) {
-    return db->insertRealTimeData(datetime, l1Data, l2Data, features);
+    STX_LOGI(logger, "Simulated writing real-time data to database for datetime: " + datetime);
+    return true;
+    // return db->insertRealTimeData(datetime, l1Data, l2Data, features);
 }
 
 void RealTimeData::writeToSharedMemory(const std::string &data) {
@@ -706,7 +709,7 @@ void RealTimeData::reconnect() {
     }
 
     STX_LOGE(logger, "Failed to reconnect to IB TWS after " + std::to_string(max_attempts) + " attempts.");
-    running = false;
+    running.store(false);
 }
 
 void RealTimeData::initializeSharedMemory() {
@@ -719,49 +722,50 @@ void RealTimeData::initializeSharedMemory() {
 }
 
 void RealTimeData::processData() {
-    while (running) {
+    while (running.load()) {
         auto now = std::chrono::system_clock::now();
         auto nextMinute = std::chrono::time_point_cast<std::chrono::minutes>(now) + std::chrono::minutes(1);
-        std::this_thread::sleep_until(nextMinute);
+        std::unique_lock<std::mutex> lock(cvMutex);
+        if (cv.wait_until(lock, nextMinute, [this] { return !running.load(); })) {
+            break; // Exit if stop() was called
+        }
         aggregateMinuteData();
     }
 }
 
 void RealTimeData::monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs) {
-    while (running) {
+    while (running.load()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(checkIntervalMs));
-        {
-            std::unique_lock<std::mutex> connectionLock(connectionMutex, std::defer_lock);
-            connectionLock.lock();
-            if (!client || !client->isConnected()) {
-                STX_LOGW(logger, "Connection lost. Attempting to reconnect...");
-                if (!connectToIB(maxRetries, retryDelayMs)) {
-                    STX_LOGE(logger, "Failed to reconnect to IB TWS.");
-                    connectionLock.unlock();
-                    std::this_thread::sleep_for(std::chrono::milliseconds(checkIntervalMs));
-                    continue;
-                }
-                requestData(maxRetries, retryDelayMs);
-            }
-            connectionLock.unlock();
+        std::unique_lock<std::mutex> lock(cvMutex);
+        if (cv.wait_for(lock, std::chrono::milliseconds(checkIntervalMs), [this] { return !running.load(); })) {
+            break; // Exit if stop() was called
         }
+        lock.unlock();
         
-        if (rawL2Data.empty() && l1Prices.empty() && l1Volumes.empty()) {
-            STX_LOGE(logger, "All data's empty, try to reconnect...");
-            reconnect();
+        if (!client || !client->isConnected()) {
+            STX_LOGW(logger, "Connection lost. Attempting to reconnect...");
+            if (!connectToIB(maxRetries, retryDelayMs)) {
+                STX_LOGE(logger, "Failed to reconnect to IB TWS.");
+                continue;
+            }
+            requestData(maxRetries, retryDelayMs);
         }
     }
 }
 
 void RealTimeData::joinThreads() {
-    processDataThread.join();
-    STX_LOGI(logger, "processDataThread joined successfully");
-
-    monitorDataFlowThread.join();
-    STX_LOGI(logger, "monitorDataFlowThread joined successfully");
-
-    readerThread.join();
-    STX_LOGI(logger, "readerThread joined successfully");    
+    if (processDataThread.joinable()) {
+        processDataThread.join();
+        STX_LOGI(logger, "processDataThread joined successfully");
+    }
+    if (monitorDataFlowThread.joinable()) {
+        monitorDataFlowThread.join();
+        STX_LOGI(logger, "monitorDataFlowThread joined successfully");
+    }
+    if (readerThread.joinable()) {
+        readerThread.join();
+        STX_LOGI(logger, "readerThread joined successfully");    
+    }
 }
 
 Contract RealTimeData::createContract(const std::string& symbol, const std::string& secType, const std::string& exchange, const std::string& currency) {

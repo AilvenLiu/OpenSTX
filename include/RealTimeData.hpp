@@ -110,7 +110,7 @@ private:
     void requestData(int maxRetries = 3, int retryDelayMs = 2000);
     void requestL1Data(int l1RequestId, const Contract& contract);
     void requestL2Data(int l2RequestID, const Contract& contract);
-    void processData();
+    
     void aggregateMinuteData();
     json aggregateL1Data();
     json aggregateL2Data();
@@ -129,6 +129,8 @@ private:
     void clearBufferData();
     void clearTemporaryData();
     void reconnect();
+
+    void processData();
     void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
     void joinThreads();
 

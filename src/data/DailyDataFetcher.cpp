@@ -193,7 +193,7 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             for (const auto& range : dateRanges) {
                 if (!running) break;
 
-                if (!requestAndProcessMonthlyData(sym, range.first, range.second)) {
+                if (!requestAndProcessWeeklyData(sym, range.first, range.second)) {
                     success = false;
                     break;
                 }
@@ -220,7 +220,7 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     stop();
 }
 
-bool DailyDataFetcher::requestAndProcessMonthlyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
+bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
     STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
 
     if (!requestDailyData(symbol, startDate, endDate, "1 day")) {
@@ -391,11 +391,12 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
     // Store data in the database
-    if (db->insertOrUpdateDailyData(date, dbData)) {
-        STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
-    } else {
-        STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
-    }
+    // if (db->insertOrUpdateDailyData(date, dbData)) {
+    //     STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
+    // } else {
+    //     STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
+    // }
+    STX_LOGI(logger, "Simulate to written into database...");
 }
 
 std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {
