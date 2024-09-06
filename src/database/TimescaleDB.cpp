@@ -26,9 +26,10 @@
 using json = nlohmann::json;
 
 TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &_dbname, const std::string &_user, const std::string &_password, const std::string &_host, const std::string &_port)
-    : logger(log), conn(nullptr), dbname(_dbname), user(_user), password(_password), host(_host), port(_port) {
+    : logger(log), conn(nullptr), dbname(_dbname), user(_user), password(_password), host(_host), port(_port), running(true) {
     try {
         connectToDatabase();
+        monitoringThread = std::thread(&TimescaleDB::checkAndReconnect, this);
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error initializing TimescaleDB: " + std::string(e.what()));
         cleanupAndExit();
@@ -37,6 +38,10 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
 
 TimescaleDB::~TimescaleDB() {
     STX_LOGI(logger, "Destructor called, cleaning up resources.");
+    running.store(false);
+    if (monitoringThread.joinable()) {
+        monitoringThread.join();
+    }
     if (conn) {
         conn.reset();
         STX_LOGI(logger, "Disconnected from TimescaleDB.");
@@ -110,6 +115,17 @@ void TimescaleDB::reconnect(int max_attempts, int delay_seconds) {
     }
     STX_LOGE(logger, "Failed to reconnect to TimescaleDB after " + std::to_string(max_attempts) + " attempts.");
     cleanupAndExit();
+}
+
+void TimescaleDB::checkAndReconnect() {
+    while (running.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(2)); // Check every 30 seconds
+
+        if (!conn || !conn->is_open()) {
+            STX_LOGW(logger, "Database connection lost. Attempting to reconnect...");
+            reconnect(5, 2); // Attempt to reconnect with 5 attempts and 2 seconds delay
+        }
+    }
 }
 
 void TimescaleDB::createTables() {
@@ -257,3 +273,4 @@ const std::string TimescaleDB::getFirstDailyStartDate(const std::string &symbol)
 
     return ""; // Return empty string if no data is found or error occurs
 }
+
