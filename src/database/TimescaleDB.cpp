@@ -229,15 +229,15 @@ bool TimescaleDB::insertOrUpdateDailyData(const std::string &date, const std::ma
 
         txn.exec(query);
         txn.commit();
+        STX_LOGI(logger, "Inserted or updated daily data for date " + date);
         return true;
     } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error inserting or updating daily data: " + std::string(e.what()));
+        STX_LOGE(logger, "Error inserting or updating daily data into TimescaleDB: " + std::string(e.what()));
         return false;
     }
 }
 
 const std::string TimescaleDB::getLastDailyEndDate(const std::string &symbol) {
-    STX_LOGI(logger, "Retrieving the last daily end date for symbol: " + symbol);
     try {
         pqxx::work txn(*conn);
         std::string query = "SELECT MAX(date) FROM daily_data WHERE symbol = " + txn.quote(symbol) + ";";
@@ -256,7 +256,6 @@ const std::string TimescaleDB::getLastDailyEndDate(const std::string &symbol) {
 }
 
 const std::string TimescaleDB::getFirstDailyStartDate(const std::string &symbol) {
-    STX_LOGI(logger, "Retrieving the first daily start date for symbol: " + symbol);
     try {
         pqxx::work txn(*conn);
         std::string query = "SELECT MIN(date) FROM daily_data WHERE symbol = " + txn.quote(symbol) + ";";
