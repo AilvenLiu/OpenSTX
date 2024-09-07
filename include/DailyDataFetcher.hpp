@@ -24,6 +24,7 @@
 
 #include <memory>
 #include <vector>
+#include <queue>
 #include <map>
 #include <string>
 #include <variant>
@@ -57,10 +58,10 @@ private:
     std::unique_ptr<EClientSocket> client;
     std::unique_ptr<EReader> reader;
     bool connected;
-    bool running;
+    std::atomic<bool> running;
+    std::atomic<bool> shouldRun;
     bool dataReceived;
     int nextRequestId;
-    std::atomic<bool> shouldRun;
     int m_nextValidId = 0;
 
     std::mutex clientMutex;
@@ -76,6 +77,11 @@ private:
     static constexpr int IB_PORT = 7496;
     static constexpr int IB_CLIENT_ID = 2;
 
+    std::thread databaseThread;
+    std::queue<std::tuple<std::string, std::map<std::string, std::variant<double, std::string>>>> dataQueue;
+    std::mutex queueMutex;
+    std::condition_variable queueCV;
+
 private:
     bool connectToIB();
     bool waitForData(); 
@@ -87,6 +93,9 @@ private:
     std::string getCurrentDate();
     void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
     int calculateDurationInDays(const std::string& startDate, const std::string& endDate);
+
+    void writeToDatabaseFunc();
+    void addToQueue(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData);
 
     double calculateSMA(const std::string& symbol, double close, int period = 20);
     double calculateEMA(const std::string& symbol, double close, int period = 20);

@@ -38,8 +38,8 @@ DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const 
       osSignal(std::make_unique<EReaderOSSignal>(2000)),
       client(nullptr),
       reader(nullptr), 
-      connected(false), running(false), dataReceived(false), nextRequestId(0),
-      shouldRun(false), m_nextValidId(0) {
+      connected(false), running(true), shouldRun(false), 
+      dataReceived(false), nextRequestId(0), m_nextValidId(0) {
     
     if (!logger) {
         throw std::runtime_error("Logger is null");
@@ -48,6 +48,7 @@ DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const 
         STX_LOGE(logger, "TimescaleDB is null");
         throw std::runtime_error("TimescaleDB is null");
     }
+
     STX_LOGI(logger, "DailyDataFetcher object created successfully.");
 }
 
@@ -75,7 +76,7 @@ bool DailyDataFetcher::connectToIB() {
             reader = std::make_unique<EReader>(client.get(), osSignal.get());
             reader->start();
 
-            shouldRun = true;
+            shouldRun.store(true);
             if (connectionThread.joinable()) {
                 connectionThread.join();
             }
@@ -110,7 +111,7 @@ bool DailyDataFetcher::connectToIB() {
 
 void DailyDataFetcher::maintainConnection() {
     try {
-        while (shouldRun) {
+        while (shouldRun.load()) {
             reader->processMsgs();
             osSignal->waitForSignal();
         }
@@ -121,10 +122,15 @@ void DailyDataFetcher::maintainConnection() {
 }
 
 void DailyDataFetcher::stop() {
-    if (!running) return;
+    if (!running.load()) return;
 
-    running = false;
-    shouldRun = false;
+    running.store(false);
+    shouldRun.store(false);
+
+    queueCV.notify_all();
+    if (databaseThread.joinable()) {
+        databaseThread.join();
+    }
 
     if (connectionThread.joinable()) {
         connectionThread.join();
@@ -145,6 +151,8 @@ void DailyDataFetcher::stop() {
 }
 
 void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
+    databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+    
     std::vector<std::string> symbols;
     if (symbol == "ALL") {
         symbols = {"SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"};
@@ -163,11 +171,13 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             continue;
         }
 
-        running = true;
         bool success = true;
+        STX_LOGI(logger, "Waiting for connection establishment for 5 seconds ...");
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        STX_LOGI(logger, "Start to request daily data.");
 
         for (const auto& sym : symbols) {
-            if (!running) break;
+            if (!running.load()) break;
 
             STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
 
@@ -179,7 +189,7 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
                 std::string firstDate = db->getFirstDailyStartDate(sym);
                 std::string tenYearsAgo = calculateStartDateFromDuration("10 Y");
                 
-                if (firstDate.empty() || firstDate > tenYearsAgo) {
+                if (firstDate.empty()) {
                     startDateTime = tenYearsAgo;
                 } else {
                     startDateTime = lastDate;
@@ -189,9 +199,10 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             }
 
             auto dateRanges = splitDateRange(startDateTime, endDateTime);
+            STX_LOGW(logger, "data to be requested: from " + dateRanges.front().first + " to " + dateRanges.back().second);
 
             for (const auto& range : dateRanges) {
-                if (!running) break;
+                if (!running.load()) break;
 
                 if (!requestAndProcessWeeklyData(sym, range.first, range.second)) {
                     success = false;
@@ -223,7 +234,23 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
 bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
     STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
 
-    if (!requestDailyData(symbol, startDate, endDate, "1 day")) {
+    const int maxRetries = 3;
+    int retryCount = 0;
+    bool success = false;
+
+    while (retryCount < maxRetries) {
+        if (requestDailyData(symbol, startDate, endDate, "1 day")) {
+            success = true;
+            break;
+        } else {
+            STX_LOGE(logger, "Failed to request daily data for " + symbol + " from " + startDate + " to " + endDate + ". Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
+            retryCount++;
+            std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait before retrying
+        }
+    }
+
+    if (!success) {
+        STX_LOGE(logger, "Failed to request daily data for " + symbol + " after " + std::to_string(maxRetries) + " retries.");
         return false;
     }
 
@@ -236,8 +263,6 @@ bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, co
 }
 
 bool DailyDataFetcher::requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize) {
-    STX_LOGI(logger, "Requesting historical data for " + symbol + " from " + startDate + " to " + endDate);
-
     if (!client || !client->isConnected()) {
         STX_LOGE(logger, "Not connected to IB TWS. Cannot request historical data.");
         return false;
@@ -272,8 +297,8 @@ bool DailyDataFetcher::requestDailyData(const std::string& symbol, const std::st
 int DailyDataFetcher::calculateDurationInDays(const std::string& startDate, const std::string& endDate) {
     std::tm tm_start = {}, tm_end = {};
     std::istringstream ss_start(startDate), ss_end(endDate);
-    ss_start >> std::get_time(&tm_start, "%Y%m%d");
-    ss_end >> std::get_time(&tm_end, "%Y%m%d");
+    ss_start >> std::get_time(&tm_start, "%Y-%m-%d");
+    ss_end >> std::get_time(&tm_end, "%Y-%m-%d");
     
     std::time_t time_start = std::mktime(&tm_start);
     std::time_t time_end = std::mktime(&tm_end);
@@ -332,6 +357,7 @@ void DailyDataFetcher::error(int id, int errorCode, const std::string &errorStri
         std::unique_lock<std::mutex> lock(cvMutex);
         dataReceived = true;
         cv.notify_one();
+        lock.unlock();
     }
 }
 
@@ -390,12 +416,7 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     // If adj_close is not provided, use regular close
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
-    // Store data in the database
-    if (db->insertOrUpdateDailyData(date, dbData)) {
-        STX_LOGI(logger, "Daily data written to db successfully: " + symbol + " " + date);
-    } else {
-        STX_LOGE(logger, "Failed to write historical data to db: " + symbol + " " + date);
-    }
+    addToQueue(date, dbData);
 }
 
 std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {
@@ -404,15 +425,15 @@ std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRang
     std::tm endTm = {};
 
     std::istringstream ssStart(startDate);
-    ssStart >> std::get_time(&startTm, "%Y%m%d");
+    ssStart >> std::get_time(&startTm, "%Y-%m-%d");
 
     std::istringstream ssEnd(endDate);
-    ssEnd >> std::get_time(&endTm, "%Y%m%d");
+    ssEnd >> std::get_time(&endTm, "%Y-%m-%d");
 
     while (std::difftime(std::mktime(&endTm), std::mktime(&startTm)) > 0) {
         std::tm nextTm = startTm;
-        nextTm.tm_mday += 7;  // Add 7 days instead of 1 month
-        std::mktime(&nextTm);  // Normalize the date
+        nextTm.tm_mday += 7;
+        std::mktime(&nextTm);
 
         if (std::mktime(&nextTm) > std::mktime(&endTm)) {
             nextTm = endTm;
@@ -425,7 +446,7 @@ std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRang
         dateRanges.emplace_back(ossStart.str(), ossEnd.str());
 
         startTm = nextTm;
-        std::mktime(&startTm);  // Normalize the date
+        std::mktime(&startTm);
     }
 
     return dateRanges;
@@ -449,7 +470,7 @@ std::string DailyDataFetcher::calculateStartDateFromDuration(const std::string& 
     }
 
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d");
+    oss << std::put_time(&tm, "%Y-%m-%d");
     return oss.str();
 }
 
@@ -457,8 +478,10 @@ std::string DailyDataFetcher::getCurrentDate() {
     std::time_t t = std::time(nullptr);
     std::tm tm = *std::localtime(&t);
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y%m%d");
-    return oss.str();
+    oss << std::put_time(&tm, "%Y-%m-%d");
+    std::string current_date = oss.str();
+    STX_LOGI(logger, "current date: " + current_date);
+    return current_date;
 }
 
 // Helper functions: Calculate SMA, EMA, RSI, MACD, VWAP, Momentum
@@ -571,4 +594,35 @@ double DailyDataFetcher::calculateMomentum(const std::string& symbol, double clo
     }
 
     return close - priceHistory[symbol].front();
+}
+
+void DailyDataFetcher::addToQueue(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        dataQueue.emplace(date, historicalData);
+        STX_LOGD(logger, date + " written into dataQueue, " + std::to_string(dataQueue.size()) + " items inside");
+        if (dataQueue.size() > 5) {
+            STX_LOGF(logger, "Size of dataQueue larger than 5, please check the status and procedure of writting data into database immediately!");
+        }
+    }
+    queueCV.notify_one();
+}
+
+void DailyDataFetcher::writeToDatabaseFunc() {
+    STX_LOGI(logger, "writeToDatabaseThread started.");
+    while (running.load() || !dataQueue.empty()) {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        queueCV.wait(lock, [this] { return !dataQueue.empty() || !running.load(); });
+
+        while (!dataQueue.empty()) {
+            auto [date, data] = dataQueue.front();
+            if (db->insertOrUpdateDailyData(date, data)) {
+                dataQueue.pop();
+                STX_LOGD(logger, "Written into database successfully, pop head item from data queue.");
+            } else {
+                STX_LOGE(logger, "Failed to write data to db: " + std::get<std::string>(data["symbol"]) + " " + date + ", will retry ...");
+                break; // Exit the loop to retry later
+            }
+        }
+    }
 }

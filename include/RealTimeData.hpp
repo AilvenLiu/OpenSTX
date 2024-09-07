@@ -25,6 +25,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
+#include <queue>
 #include <sstream>
 #include <fstream>
 #include <chrono>
@@ -85,6 +86,7 @@ private:
     std::thread readerThread;
     std::thread processDataThread;
     std::thread monitorDataFlowThread;
+    std::thread databaseThread;
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
@@ -92,14 +94,18 @@ private:
     std::vector<double> l1PricesBuffer;
     std::vector<Decimal> l1VolumesBuffer;
     std::vector<L2DataPoint> rawL2DataBuffer;
+    std::queue<std::tuple<std::string, json, json, json>> dataQueue;
 
     std::condition_variable cv;
+    std::condition_variable queueCV;
+
     std::mutex dataMutex;
     std::mutex bufferMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
     std::mutex connectionMutex;
     std::mutex cvMutex;
+    std::mutex queueMutex;
 
     boost::interprocess::shared_memory_object shm;
     boost::interprocess::mapped_region region;
@@ -123,7 +129,8 @@ private:
     std::string getCurrentDateTime() const;
     std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
     void writeToSharedMemory(const std::string &data);
-    bool writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    void addToQueue(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features);
+    void writeToDatabaseFunc();
     
     void swapBuffers();
     void clearBufferData();

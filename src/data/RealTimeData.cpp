@@ -130,6 +130,7 @@ bool RealTimeData::start() {
 
         processDataThread = std::thread(&RealTimeData::processData, this);
         monitorDataFlowThread = std::thread(&RealTimeData::monitorDataFlow, this, 3, 1000, 5000);
+        databaseThread = std::thread(&RealTimeData::writeToDatabaseFunc, this);
 
         STX_LOGI(logger, "RealTimeData collection started successfully.");
         return true;
@@ -309,10 +310,7 @@ void RealTimeData::aggregateMinuteData() {
         
         std::string datetime = getCurrentDateTime();
 
-        if (!writeToDatabase(datetime, l1Data, l2Data, features)) {
-            throw std::runtime_error("Failed to write data to database");
-        }
-
+        addToQueue(datetime, l1Data, l2Data, features);
         writeToSharedMemory(createCombinedJson(datetime, l1Data, l2Data, features));
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error in aggregateMinuteData: " + std::string(e.what()));
@@ -438,8 +436,12 @@ std::string RealTimeData::getCurrentDateTime() const {
     return oss.str();
 }
 
-bool RealTimeData::writeToDatabase(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) {
-    return db->insertRealTimeData(datetime, l1Data, l2Data, features);
+void RealTimeData::addToQueue(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) {
+    std::unique_lock<std::mutex> queueLock(queueMutex, std::defer_lock);
+    queueLock.lock();
+    dataQueue.emplace(datetime, l1Data, l2Data, features);
+    queueLock.unlock();
+    queueCV.notify_one();
 }
 
 void RealTimeData::writeToSharedMemory(const std::string &data) {
@@ -751,6 +753,24 @@ void RealTimeData::monitorDataFlow(int maxRetries, int retryDelayMs, int checkIn
     }
 }
 
+void RealTimeData::writeToDatabaseFunc() {
+    while (running.load() || !dataQueue.empty()) {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        queueCV.wait(lock, [this] { return !dataQueue.empty() || !running.load(); });
+
+        while (!dataQueue.empty()) {
+            auto [datetime, l1Data, l2Data, features] = dataQueue.front();
+            if (db->insertRealTimeData(datetime, l1Data, l2Data, features)) {
+                dataQueue.pop();
+                STX_LOGI(logger, "Data wtite into database successfulle: " + datetime);
+            } else {
+                STX_LOGE(logger, "Failed to write data to database, will retry.");
+                break; // Exit the loop to retry later
+            }
+        }
+    }
+}
+
 void RealTimeData::joinThreads() {
     if (processDataThread.joinable()) {
         processDataThread.join();
@@ -763,6 +783,10 @@ void RealTimeData::joinThreads() {
     if (readerThread.joinable()) {
         readerThread.join();
         STX_LOGI(logger, "readerThread joined successfully");    
+    }
+    if (databaseThread.joinable()) {
+        databaseThread.join();
+        STX_LOGI(logger, "databaseThread joined successfully");
     }
 }
 

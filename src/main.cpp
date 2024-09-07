@@ -54,14 +54,15 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     tzset();
     localtime_r(&utc_time, &ny_time);
 
-    bool open = (ny_time.tm_hour > 7 && ny_time.tm_hour < 20);
+    bool open = (ny_time.tm_hour >= 9 && ny_time.tm_hour < 16);
     bool weekend = (ny_time.tm_wday == 0 || ny_time.tm_wday == 6);
-
+    
     std::ostringstream oss;
     oss << std::put_time(&ny_time, "%Y-%m-%d %H:%M:%S");
     std::string datetime = oss.str();
 
-    STX_LOGD(logger, "Current New York Time: " + datetime);
+    bool opened = (open && weekend);
+    STX_LOGD(logger, "Current New York Time: " + datetime + ", week: " + std::to_string(ny_time.tm_wday) + ", market is " + (opened ? " open" : " close"));
 
     return open && !weekend;
 }

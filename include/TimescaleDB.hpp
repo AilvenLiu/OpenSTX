@@ -28,6 +28,7 @@
 #include <vector>
 #include <memory>
 #include <variant>
+#include <thread>
 
 #include "nlohmann/json.hpp"
 #include "Logger.hpp"
@@ -52,14 +53,13 @@ private:
     void reconnect(int max_attempts, int delay_seconds);
     void createTables();
     void cleanupAndExit();
+    void checkAndReconnect();
 
     std::shared_ptr<Logger> logger;
     std::unique_ptr<pqxx::connection> conn;
-    std::string dbname;
-    std::string user;
-    std::string password;
-    std::string host;
-    std::string port;
+    std::string dbname, user, password, host, port;
+    std::atomic<bool> running;
+    std::thread monitoringThread;
 };
 
 #endif // TIMESCALEDB_H
