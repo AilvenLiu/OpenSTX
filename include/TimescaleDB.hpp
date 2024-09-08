@@ -29,6 +29,8 @@
 #include <memory>
 #include <variant>
 #include <thread>
+#include <mutex>
+#include <condition_variable>
 
 #include "nlohmann/json.hpp"
 #include "Logger.hpp"
@@ -39,6 +41,8 @@ class TimescaleDB {
 public:
     TimescaleDB(const std::shared_ptr<Logger>& logger, const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
     ~TimescaleDB();
+    void stop();
+    inline const bool isRunning() const { return running.load(); }
 
     bool insertRealTimeData(const std::string &datetime, const json &l1Data, const json &l2Data, const json &featureData);
     bool insertOrUpdateDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData);
@@ -60,6 +64,8 @@ private:
     std::string dbname, user, password, host, port;
     std::atomic<bool> running;
     std::thread monitoringThread;
+    std::mutex cvMutex;
+    std::condition_variable cv;
 };
 
 #endif // TIMESCALEDB_H

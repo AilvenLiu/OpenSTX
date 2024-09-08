@@ -6,3 +6,6 @@ torch
 ib_insync
 numpy
 configparser
+statsmodels
+arch
+tqdm

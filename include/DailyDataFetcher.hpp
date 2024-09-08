@@ -48,8 +48,8 @@ public:
     ~DailyDataFetcher();
     
     void stop();
-    void fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental);
-    inline const bool isConnected() const { return connected; }
+    bool fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental);
+    inline const bool isRunning() const { return running.load(); }
 
 private:
     std::shared_ptr<Logger> logger;
@@ -57,33 +57,33 @@ private:
     std::unique_ptr<EReaderOSSignal> osSignal;
     std::unique_ptr<EClientSocket> client;
     std::unique_ptr<EReader> reader;
-    bool connected;
     std::atomic<bool> running;
-    std::atomic<bool> shouldRun;
     bool dataReceived;
     int nextRequestId;
     int m_nextValidId = 0;
 
-    std::mutex clientMutex;
-    std::mutex cvMutex;
-    std::condition_variable cv;
     std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
-    std::thread connectionThread;
+    std::queue<std::tuple<std::string, std::map<std::string, std::variant<double, std::string>>>> dataQueue;
+
+    std::thread databaseThread;
+    std::thread readerThread;
 
     std::mutex nextValidIdMutex;
-    std::condition_variable nextValidIdCV;
+    std::mutex clientMutex;
+    std::mutex cvMutex;
+    std::mutex queueMutex;
+    std::mutex readerMutex;
 
+    std::condition_variable nextValidIdCV;
+    std::condition_variable cv;
+    std::condition_variable queueCV;
+    
     static constexpr const char* IB_HOST = "127.0.0.1";
     static constexpr int IB_PORT = 7496;
     static constexpr int IB_CLIENT_ID = 2;
 
-    std::thread databaseThread;
-    std::queue<std::tuple<std::string, std::map<std::string, std::variant<double, std::string>>>> dataQueue;
-    std::mutex queueMutex;
-    std::condition_variable queueCV;
-
 private:
-    bool connectToIB();
+    bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
     bool waitForData(); 
     void maintainConnection();
     bool requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);

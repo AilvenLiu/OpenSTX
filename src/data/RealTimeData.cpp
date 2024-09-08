@@ -37,11 +37,12 @@ constexpr size_t SHARED_MEMORY_SIZE = 4096;
 
 RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared_ptr<TimescaleDB>& _db)
     : logger(log), db(_db), 
-      osSignal(std::make_unique<EReaderOSSignal>(2000)), 
+      osSignal(nullptr), 
       client(nullptr), 
       reader(nullptr),
       nextOrderId(0), 
-      requestId(0), yesterdayClose(0.0), running(false), previousVolume(0), connected(false) {
+      requestId(0), 
+      running(false){
 
     if (!logger || !db) {
         throw std::runtime_error("Logger or TimescaleDB is null");
@@ -50,25 +51,29 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
 }
 
 RealTimeData::~RealTimeData() {
+    if (!running.load()) return;
     stop(); 
 }
 
 bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
-    STX_LOGD(logger, "Attempting to acquire connectionMutex in connectToIB");
-    std::unique_lock<std::mutex> connectionLock(connectionMutex, std::defer_lock);
-    connectionLock.lock();
-    STX_LOGD(logger, "Acquired connectionMutex in connectToIB");
+    std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
+    clientLock.lock();
 
     for (int attempt = 0; attempt < maxRetries; ++attempt) {
         try {
-            client = std::make_unique<EClientSocket>(this, osSignal.get());
+            if (!osSignal) osSignal = std::make_unique<EReaderOSSignal>(2000);
+            if (!osSignal) throw std::runtime_error("Failed to create EReaderOSSignal");
+
+            if (!client) client = std::make_unique<EClientSocket>(this, osSignal.get());
+            if (!client) throw std::runtime_error("Failed to create EClientSocket");
+
             if (!client->eConnect(IB_HOST, IB_PORT, IB_CLIENT_ID, false)) {
                 throw std::runtime_error("Failed to connect to IB TWS");
             }
 
-            STX_LOGI(logger, "Connected to IB TWS.");
+            if (!reader) reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            if (!reader) throw std::runtime_error("Failed to create EReader");
 
-            reader = std::make_unique<EReader>(client.get(), osSignal.get());
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             reader->start();
 
@@ -84,20 +89,28 @@ bool RealTimeData::connectToIB(int maxRetries, int retryDelayMs) {
                     readerLock.unlock();
                 }
             });
-
-            connected.store(true);
-            connectionLock.unlock();
+            
+            STX_LOGI(logger, "Connected to IB TWS.");
+            clientLock.unlock();
             return true;
         } catch (const std::exception &e) {
             STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
             if (attempt < maxRetries - 1) {
                 STX_LOGI(logger, "Retrying connection in " + std::to_string(retryDelayMs) + "ms...");
                 std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
+            } else {
+                // Cleanup resources on final failure
+                if (client && client->isConnected()) {
+                    client->eDisconnect();
+                }
+                client.reset();
+                reader.reset();
+                osSignal.reset();
             }
         }
     }
 
-    connectionLock.unlock();
+    clientLock.unlock();
     return false;
 }
 
@@ -109,17 +122,15 @@ bool RealTimeData::start() {
     if (running.load()) {
         STX_LOGI(logger, "RealTimeData is already running.");
         clientLock.unlock();
-        return true; // Already running, so consider it a success
+        return true;
     }
     STX_LOGI(logger, "Starting RealTimeData collection...");
     running.store(true);
     clientLock.unlock();
 
-    if (!connected.load() && !connectToIB()) {
+    if (!connectToIB()) {
         STX_LOGE(logger, "Failed to connect to IB TWS.");
-        clientLock.lock();
         running.store(false);
-        clientLock.unlock();
         return false;
     }
 
@@ -141,9 +152,14 @@ bool RealTimeData::start() {
         clientLock.unlock();
         return false;
     }
+    return false;
 }
 
 void RealTimeData::stop() {
+    if (!running.load()) {
+        STX_LOGW(logger, "RealTimeData is already stopped.");
+        return;
+    }
     
     running.store(false);
 
@@ -176,8 +192,13 @@ void RealTimeData::stop() {
     } else {
         STX_LOGW(logger, "reader was already null.");
     }
-    
-    connected.store(false);
+
+    if (osSignal) {
+        osSignal.reset();
+        STX_LOGI(logger, "osSignal reset successfully.");
+    } else {
+        STX_LOGW(logger, "osSignal was already null.");
+    }
 
     STX_LOGI(logger, "RealTimeData stopped and cleaned up.");
 }

@@ -26,20 +26,26 @@ def calculate_metrics(df):
         'r2_score': r2_score(df['actual'], df['predicted'])
     }
 
-def backtest(data_loader, models, lstm_models):
+def backtest(data_loader, models, lstm_models, arima_models, garch_models, transformer_models, window_size=252, prediction_days=5):
     results = {}
     for symbol, symbol_data in data_loader:
-        # Split data into training and testing sets
-        train_size = int(len(symbol_data) * 0.8)
-        train_data = symbol_data[:train_size]
-        test_data = symbol_data[train_size:]
+        X = symbol_data.drop(columns=['close', 'symbol'])
+        y = symbol_data['close']
         
-        # Make predictions on the test set
-        predictions = make_predictions(models[symbol], lstm_models[symbol], test_data)
-        df = pd.DataFrame({'actual': test_data['close'], 'predicted': predictions})
-        
-        # Calculate performance metrics
-        metrics = calculate_metrics(df)
-        results[symbol] = metrics
+        # Rolling window approach
+        for start in range(len(X) - window_size - prediction_days):
+            end = start + window_size
+            X_train, X_test = X[start:end], X[end:end+prediction_days]
+            y_train, y_test = y[start:end], y[end:end+prediction_days]
+            
+            # Make predictions on the test set
+            predictions = make_predictions(models[symbol], lstm_models[symbol], arima_models[symbol], garch_models[symbol], transformer_models[symbol], X_test, prediction_days)
+            df = pd.DataFrame({'actual': y_test.values[:prediction_days], 'predicted': predictions})
+            
+            # Calculate performance metrics
+            metrics = calculate_metrics(df)
+            results[symbol] = metrics
     
-    return results
+    # Select the best model based on Sharpe ratio
+    best_model = max(results, key=lambda x: results[x]['sharpe_ratio'])
+    return results, best_model

@@ -14,15 +14,16 @@ def main():
     data_loader.start()
     
     try:
-        models, lstm_models = train_models(data_loader)
+        models, lstm_models, arima_models, garch_models, transformer_models = train_models(data_loader, prediction_days=5)
         
-        backtest_results = backtest(data_loader, models, lstm_models)
+        backtest_results, best_model = backtest(data_loader, models, lstm_models, arima_models, garch_models, transformer_models, prediction_days=5)
         print("Backtest results:", backtest_results)
+        print("Best model:", best_model)
         
-        learning_thread = threading.Thread(target=continuous_learning, args=(symbols, db_config, models, lstm_models))
+        learning_thread = threading.Thread(target=continuous_learning, args=(symbols, db_config, models, lstm_models, arima_models, garch_models, transformer_models, 3600, 252, 5))
         learning_thread.start()
         
-        trading_thread = threading.Thread(target=real_time_trading, args=(symbols, db_config, models, lstm_models))
+        trading_thread = threading.Thread(target=real_time_trading, args=(symbols, db_config, models, lstm_models, arima_models, garch_models, transformer_models, 3600, 252, 5))
         trading_thread.start()
         
         learning_thread.join()

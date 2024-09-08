@@ -62,7 +62,7 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     std::string datetime = oss.str();
 
     bool opened = (open && weekend);
-    STX_LOGD(logger, "Current New York Time: " + datetime + ", week: " + std::to_string(ny_time.tm_wday) + ", market is " + (opened ? " open" : " close"));
+    STX_LOGD(logger, "Current New York Time: " + datetime + ", week: " + std::to_string(ny_time.tm_wday) + ", market is " + (opened ? "open" : "close"));
 
     return open && !weekend;
 }
@@ -95,7 +95,7 @@ int main(int argc, char* argv[]) {
     std::string timestamp = oss.str();
 
     std::string logFilePath = "logs/OpenSTX_" + timestamp + ".log";
-    auto logger = std::make_shared<Logger>(logFilePath, logLevel);
+    std::shared_ptr<Logger> logger = std::make_shared<Logger>(logFilePath, logLevel);
     STX_LOGI(logger, "Start main");
 
     std::shared_ptr<TimescaleDB> timescaleDB;
@@ -166,11 +166,15 @@ int main(int argc, char* argv[]) {
     });
 
     std::thread historicalDataThread([&]() {
-        std::this_thread::sleep_for(std::chrono::seconds(30));
+        std::this_thread::sleep_for(std::chrono::seconds(5));
         while (running.load()) {
             try {
                 if (!isMarketOpenTime(logger)) {
-                    historicalDataFetcher->fetchAndProcessDailyData("ALL", "10 Y", true);
+                    if (!historicalDataFetcher->fetchAndProcessDailyData("ALL", "10 Y", true)) {
+                        STX_LOGE(logger, "Failed to fetch historical data");
+                        continue;
+                    }
+
                     STX_LOGI(logger, "Historical data fetch complete, sleeping for an hour.");
                     for (int i = 0; i < 60 && running.load(); ++i) {
                         std::unique_lock<std::mutex> lock(cvMutex);
@@ -198,13 +202,28 @@ int main(int argc, char* argv[]) {
 
     STX_LOGI(logger, "Terminating the program gracefully...");
 
-    dataCollector->stop(); 
-    historicalDataFetcher->stop();
+    if (dataCollector && dataCollector->isRunning()) {
+        STX_LOGD(logger, "dataCollector is still running.");
+        dataCollector->stop(); 
+    }
+
+    if (historicalDataFetcher && historicalDataFetcher->isRunning()) {
+        STX_LOGD(logger, "historicalDataFetcher is still running.");
+        historicalDataFetcher->stop();
+    }
+
+    if (timescaleDB && timescaleDB->isRunning()) {
+        STX_LOGD(logger, "timescaleDB is still running.");
+        timescaleDB->stop();
+    }
 
     if (realTimeDataThread.joinable()) realTimeDataThread.join();
     if (historicalDataThread.joinable()) historicalDataThread.join();
-
+    
     STX_LOGI(logger, "Program terminated successfully.");
+
+    // wait for resource release
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
 
     return 0;
 }
