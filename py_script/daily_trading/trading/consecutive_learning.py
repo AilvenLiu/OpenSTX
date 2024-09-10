@@ -1,10 +1,10 @@
 import time
 from data.data_fetching import fetch_data
 from data.data_preprocessing import preprocess_data
-from models.model_training import update_model, update_lstm_model, update_arima_model, update_garch_model, update_transformer_model
+from models.model_training import update_model, update_lstm_model, update_arima_model, update_garch_model, update_transformer_model, update_ml_model
 from config.db_config import read_db_config
 
-def continuous_learning(symbols, db_config, models, lstm_models, arima_models, garch_models, transformer_models, interval=3600, window_size=252, prediction_days=5):
+def continuous_learning(symbols, db_config, models, lstm_models, arima_models, garch_models, transformer_models, ml_models, interval=3600, window_size=252, prediction_days=5):
     while True:
         new_data = fetch_data(symbols, db_config)
         new_data = preprocess_data(new_data)
@@ -16,5 +16,6 @@ def continuous_learning(symbols, db_config, models, lstm_models, arima_models, g
             arima_models[symbol] = update_arima_model(arima_models[symbol], symbol_data)
             garch_models[symbol] = update_garch_model(garch_models[symbol], symbol_data)
             transformer_models[symbol] = update_transformer_model(transformer_models[symbol], symbol_data)
+            ml_models[symbol] = update_ml_model(ml_models[symbol][0], ml_models[symbol][1], symbol_data)
         print("Models updated successfully")
         time.sleep(interval)

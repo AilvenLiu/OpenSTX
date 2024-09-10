@@ -119,7 +119,6 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             ensemble_model = VotingRegressor(estimators=[('xgb', xgb_model), ('lgb', lgb_model), ('rf', rf_model)])
             grid_search = GridSearchCV(estimator=ensemble_model, param_grid=param_grid, cv=3, n_jobs=-1)
             grid_search.fit(X_train, y_train)
-            
             best_model = grid_search.best_estimator_
             
             X_train_lstm = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))
@@ -152,7 +151,7 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             
             # Train a machine learning model (e.g., RandomForestClassifier)
             ml_model = RandomForestClassifier(n_estimators=100, random_state=42)
-            ml_model.fit(features_scaled, (y_train > y_train.shift(1)).astype(int).fillna(0))  # Binary classification for price increase
+            ml_model.fit(features_scaled, (y_train > y_train.shift(1)).astype(int).fillna(0))
             
             models[symbol] = best_model
             lstm_models[symbol] = lstm_model
@@ -192,6 +191,29 @@ def update_transformer_model(transformer_model, new_data, transformer_params={})
     y_new = new_data['close'].values
     transformer_model = train_transformer_model(X_new, y_new, X_new.shape[2], **transformer_params)
     return transformer_model
+
+def update_ml_model(ml_model, scaler, new_data):
+    X_new = new_data.drop(columns=['close', 'symbol'])
+    y_new = new_data['close']
+    upper_band, lower_band = bollinger_bands(new_data)
+    macd_line, signal_line = macd(new_data)
+    rsi_values = rsi(new_data)
+    
+    features = []
+    for i in range(len(X_new)):
+        features.append([
+            X_new.iloc[i].mean(),
+            upper_band.iloc[i],
+            lower_band.iloc[i],
+            macd_line.iloc[i],
+            signal_line.iloc[i],
+            rsi_values.iloc[i]
+        ])
+    
+    features = np.array(features)
+    features_scaled = scaler.transform(features)
+    ml_model.fit(features_scaled, (y_new > y_new.shift(1)).astype(int).fillna(0))
+    return ml_model, scaler
 
 def make_predictions(model, lstm_model, arima_model, garch_model, transformer_model, ml_model, scaler, data, prediction_days=5):
     X = data.drop(columns=['close', 'symbol'])

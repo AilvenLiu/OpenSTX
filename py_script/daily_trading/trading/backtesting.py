@@ -26,7 +26,7 @@ def calculate_metrics(df):
         'r2_score': r2_score(df['actual'], df['predicted'])
     }
 
-def backtest(data_loader, models, lstm_models, arima_models, garch_models, transformer_models, window_size=252, prediction_days=5):
+def backtest(data_loader, models, lstm_models, arima_models, garch_models, transformer_models, ml_models, window_size=252, prediction_days=5):
     results = {}
     for symbol, symbol_data in data_loader:
         X = symbol_data.drop(columns=['close', 'symbol'])
@@ -39,7 +39,7 @@ def backtest(data_loader, models, lstm_models, arima_models, garch_models, trans
             y_train, y_test = y[start:end], y[end:end+prediction_days]
             
             # Make predictions on the test set
-            predictions = make_predictions(models[symbol], lstm_models[symbol], arima_models[symbol], garch_models[symbol], transformer_models[symbol], X_test, prediction_days)
+            predictions = make_predictions(models[symbol], lstm_models[symbol], arima_models[symbol], garch_models[symbol], transformer_models[symbol], ml_models[symbol][0], ml_models[symbol][1], X_test, prediction_days)
             df = pd.DataFrame({'actual': y_test.values[:prediction_days], 'predicted': predictions})
             
             # Calculate performance metrics

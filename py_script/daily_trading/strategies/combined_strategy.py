@@ -5,7 +5,6 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
 def generate_strategy():
-    # Example: Randomly generate a simple moving average strategy
     short_window = random.randint(5, 20)
     long_window = random.randint(20, 50)
     return lambda data: data['close'].rolling(window=short_window).mean() > data['close'].rolling(window=long_window).mean()

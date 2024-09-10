@@ -9,3 +9,5 @@ configparser
 statsmodels
 arch
 tqdm
+psycopg2-binary
+# brew install libomp
