@@ -33,9 +33,16 @@ if [ ! -f "$LIB_DIR/libbid.a" ]; then
     exit 1
 fi
 
+# Check for TEST argument
+CMAKE_ARGS=""
+if [ "$1" = "TEST" ]; then
+    CMAKE_ARGS="-D__TEST__=ON"
+    echo "Building in TEST mode..."
+fi
+
 cd "$BUILD_DIR"
 echo "Running CMake..."
-cmake ..
+cmake .. $CMAKE_ARGS ..
 echo "Compiling the project..."
 make -j8
 

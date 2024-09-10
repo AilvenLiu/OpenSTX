@@ -6,3 +6,9 @@ torch
 ib_insync
 numpy
 configparser
+statsmodels
+arch
+tqdm
+psycopg2-binary
+sqlalchemy
+# brew install libomp

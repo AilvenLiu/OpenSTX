@@ -59,7 +59,7 @@ public:
 
     bool start();
     void stop();
-    inline const bool isConnected() const { return connected; }
+    inline const bool isRunning() const { return running.load(); }
 
 private:
     struct L2DataPoint {
@@ -78,10 +78,7 @@ private:
     std::unique_ptr<EReader> reader;
     OrderId nextOrderId;
     int requestId;
-    double yesterdayClose;
     std::atomic<bool> running;
-    Decimal previousVolume;
-    std::atomic<bool> connected;
 
     std::thread readerThread;
     std::thread processDataThread;
@@ -103,7 +100,6 @@ private:
     std::mutex bufferMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
-    std::mutex connectionMutex;
     std::mutex cvMutex;
     std::mutex queueMutex;
 

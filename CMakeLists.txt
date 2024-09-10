@@ -12,6 +12,13 @@ include_directories(${PROJECT_SOURCE_DIR}/include)
 include_directories(${PROJECT_SOURCE_DIR}/third_parts/ib_tws/include)
 include_directories(${PROJECT_SOURCE_DIR}/third_parts/libpqxx/include)
 
+# Add TEST definition if __TEST__ is set
+option(__TEST__ "Build in TEST mode" OFF)
+if(__TEST__)
+    add_definitions(-D__TEST__)
+    message(STATUS "Building in TEST mode")
+endif()
+
 # Add source files for the main project
 file(GLOB_RECURSE PROJECT_SOURCES 
     "${PROJECT_SOURCE_DIR}/src/logger/Logger.cpp"

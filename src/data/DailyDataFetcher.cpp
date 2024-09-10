@@ -35,123 +35,182 @@ constexpr int IB_CLIENT_ID = 2;
 
 DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const std::shared_ptr<TimescaleDB>& _db)
     : logger(logger), db(_db), 
-      osSignal(std::make_unique<EReaderOSSignal>(2000)),
+      osSignal(nullptr),
       client(nullptr),
       reader(nullptr), 
-      connected(false), running(true), shouldRun(false), 
+      running(false), 
       dataReceived(false), nextRequestId(0), m_nextValidId(0) {
     
     if (!logger) {
         throw std::runtime_error("Logger is null");
     }
+#ifndef __TEST__
     if (!db) {
-        STX_LOGE(logger, "TimescaleDB is null");
         throw std::runtime_error("TimescaleDB is null");
     }
+#endif
 
     STX_LOGI(logger, "DailyDataFetcher object created successfully.");
 }
 
 DailyDataFetcher::~DailyDataFetcher() {
-    stop();
+    if (running.load()) stop();
 }
 
-bool DailyDataFetcher::connectToIB() {
-    std::lock_guard<std::mutex> lock(clientMutex);
+bool DailyDataFetcher::connectToIB(int maxRetries, int retryDelayMs) {
+    std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
+    clientLock.lock();
 
-    if (client && client->isConnected()) {
-        client->eDisconnect();
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-    }
+    for (int attempt = 0; attempt < maxRetries; ++attempt) {
+        try {
+            if (!osSignal) osSignal = std::make_unique<EReaderOSSignal>(2000);
+            if (!osSignal) throw std::runtime_error("Failed to create EReaderOSSignal");
 
-    try {
-        client = std::make_unique<EClientSocket>(this, osSignal.get());
-        if (!client) {
-            throw std::runtime_error("Failed to create EClientSocket");
-        }
+            if (!client) client = std::make_unique<EClientSocket>(this, osSignal.get());
+            if (!client) throw std::runtime_error("Failed to create EClientSocket");
 
-        if (client->eConnect(IB_HOST, IB_PORT, IB_CLIENT_ID, false)) {
-            STX_LOGI(logger, "Connected to IB TWS.");
+            if (!client->eConnect(IB_HOST, IB_PORT, IB_CLIENT_ID, false)) {
+                throw std::runtime_error("Failed to connect to IB TWS");
+            }
 
-            reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            if (!reader) reader = std::make_unique<EReader>(client.get(), osSignal.get());
+            if (!reader) throw std::runtime_error("Failed to create EReader");
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             reader->start();
 
-            shouldRun.store(true);
-            if (connectionThread.joinable()) {
-                connectionThread.join();
-            }
-            connectionThread = std::thread([this]() { maintainConnection(); });
+            readerThread = std::thread([this]() {
+                while (running.load() && client->isConnected()) {
+                    osSignal->waitForSignal();
+                    std::unique_lock<std::mutex> readerLock(readerMutex, std::defer_lock);
+                    readerLock.lock();
+                    if (!running.load()) {
+                        break;
+                    }
+                    reader->processMsgs();
+                    readerLock.unlock();
+                }
+            });
 
-            std::unique_lock<std::mutex> nextIdLock(nextValidIdMutex);
-            auto waitResult = nextValidIdCV.wait_for(nextIdLock, std::chrono::seconds(30),
+            std::unique_lock<std::mutex> nextIdLock(nextValidIdMutex, std::defer_lock);
+            nextIdLock.lock();
+            STX_LOGI(logger, "Waiting for next valid ID...");
+            auto waitResult = nextValidIdCV.wait_for(nextIdLock, std::chrono::seconds(30),  
                 [this] { return m_nextValidId > 0; });
+            nextIdLock.unlock();
 
             if (!waitResult) {
                 STX_LOGE(logger, "Timeout waiting for next valid ID. Current m_nextValidId: " + std::to_string(m_nextValidId));
-                stop();
-                return false;
+            } else {
+                STX_LOGI(logger, "Connected to IB TWS.");
+                clientLock.unlock();
+                return true; 
             }
-
-            STX_LOGI(logger, "Received next valid ID: " + std::to_string(m_nextValidId));
-
-            connected = true;
-            STX_LOGI(logger, "Successfully initialized connection to IB TWS.");
-            return true;
-        } else {
-            STX_LOGE(logger, "Failed to connect to IB TWS.");
-            stop();
-            return false;
+        } catch (const std::exception &e) {
+            STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
+            if (attempt < maxRetries - 1) {
+                STX_LOGI(logger, "Retrying connection in " + std::to_string(retryDelayMs) + "ms...");
+                std::this_thread::sleep_for(std::chrono::milliseconds(retryDelayMs));
+            } else {
+                // Cleanup resources on final failure
+                if (client && client->isConnected()) {
+                    client->eDisconnect();
+                }
+                client.reset();
+                reader.reset();
+                osSignal.reset();
+            }
         }
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Error during connectToIB: " + std::string(e.what()));
-        stop();
-        return false;
     }
-}
-
-void DailyDataFetcher::maintainConnection() {
-    try {
-        while (shouldRun.load()) {
-            reader->processMsgs();
-            osSignal->waitForSignal();
-        }
-    } catch (const std::exception &e) {
-        STX_LOGE(logger, "Exception in maintainConnection: " + std::string(e.what()));
-        stop();
-    }
+    
+    clientLock.unlock();
+    return false;
 }
 
 void DailyDataFetcher::stop() {
-    if (!running.load()) return;
+    if (!running.load()) {
+        STX_LOGW(logger, "DailyDataFetcher is already stopped.");
+        return;
+    }
 
     running.store(false);
-    shouldRun.store(false);
-
-    queueCV.notify_all();
-    if (databaseThread.joinable()) {
-        databaseThread.join();
-    }
-
-    if (connectionThread.joinable()) {
-        connectionThread.join();
-    }
 
     {
-        std::lock_guard<std::mutex> lock(clientMutex);
-        if (client && client->isConnected()) {
-            client->eDisconnect();
-            STX_LOGI(logger, "Disconnected from IB TWS.");
-        }
-        client.reset();
-        reader.reset();
+        std::lock_guard<std::mutex> cvLock(cvMutex);
+        std::lock_guard<std::mutex> nextValidIdCVLock(nextValidIdMutex);
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        cv.notify_all();
+        nextValidIdCV.notify_all();
+        queueCV.notify_all();
     }
 
-    connected = false;
+    if (databaseThread.joinable()) {
+        databaseThread.join();
+        STX_LOGI(logger, "databaseThread joined successfully.");
+    }
+    if (readerThread.joinable()) {
+        readerThread.join();
+        STX_LOGI(logger, "readerThread joined successfully.");
+    }
+
+    std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
+    clientLock.lock();
+    if (client && client->isConnected()) {
+        client->eDisconnect();
+        STX_LOGI(logger, "Disconnected from IB TWS.");
+    }
+    clientLock.unlock();
+
+    if (client) {
+        client.reset();
+        STX_LOGI(logger, "client reset successfully.");
+    } else {
+        STX_LOGW(logger, "client was already nullptr.");
+    }
+
+    if (reader) {
+        reader->stop();
+        STX_LOGI(logger, "reader stopped successfully.");
+    } else {
+        STX_LOGW(logger, "reader was already null.");
+    }
+
+    if (osSignal) {
+        osSignal.reset();
+        STX_LOGI(logger, "osSignal reset successfully.");
+    } else {
+        STX_LOGW(logger, "osSignal was already null.");
+    }
+
     STX_LOGI(logger, "DailyDataFetcher stopped and cleaned up.");
 }
 
-void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
+bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const std::string& duration, bool incremental) {
+    if (databaseThread.joinable()) {
+        databaseThread.join();
+    }
     databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+
+    std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
+    clientLock.lock();
+    if (running.load()) {
+        STX_LOGW(logger, "DailyDataFetcher is already running.");
+        clientLock.unlock();
+        return true;
+    }
+    STX_LOGI(logger, "start DailyDataFetcher collection ...");
+    running.store(true);
+    clientLock.unlock();
+
+    if (!connectToIB()) {
+        STX_LOGE(logger, "Failed to connect to IB TWS.");
+        running.store(false);
+        return false;
+    }
+
+    STX_LOGI(logger, "Waiting for connection establishment for 5 seconds ...");
+    std::this_thread::sleep_for(std::chrono::seconds(5));
+    STX_LOGI(logger, "Start to request daily data.");
+
     
     std::vector<std::string> symbols;
     if (symbol == "ALL") {
@@ -160,30 +219,18 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         symbols.push_back(symbol);
     }
 
+    bool success = true;
     int retryCount = 0;
-    const int maxRetries = 3;
-
-    while (retryCount < maxRetries) {
-        if (!connected && !connectToIB()) {
-            STX_LOGE(logger, "Failed to connect to IB TWS. Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
-            retryCount++;
-            std::this_thread::sleep_for(std::chrono::seconds(5));
-            continue;
-        }
-
-        bool success = true;
-        STX_LOGI(logger, "Waiting for connection establishment for 5 seconds ...");
-        std::this_thread::sleep_for(std::chrono::seconds(5));
-        STX_LOGI(logger, "Start to request daily data.");
-
-        for (const auto& sym : symbols) {
+    int maxRetryTimes = 5;
+    while (retryCount <= maxRetryTimes) {
+        for (const std::string& sym : symbols) {
             if (!running.load()) break;
 
             STX_LOGI(logger, "Fetching and processing historical data for symbol: " + sym);
 
             std::string endDateTime = getCurrentDate();
             std::string startDateTime;
-
+#ifndef __TEST__
             if (incremental) {
                 std::string lastDate = db->getLastDailyEndDate(sym);
                 std::string firstDate = db->getFirstDailyStartDate(sym);
@@ -197,6 +244,9 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             } else {
                 startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
             }
+#else
+            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
+#endif
 
             auto dateRanges = splitDateRange(startDateTime, endDateTime);
             STX_LOGW(logger, "data to be requested: from " + dateRanges.front().first + " to " + dateRanges.back().second);
@@ -212,8 +262,6 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
                 std::this_thread::sleep_for(std::chrono::seconds(2));
             }
 
-            if (!success) break;
-            
             STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
         }
 
@@ -221,14 +269,14 @@ void DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             break;
         } else {
             retryCount++;
-            STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(retryCount) + " of " + std::to_string(maxRetries));
+            STX_LOGE(logger, "Failed to fetch data. Retry " + std::to_string(++retryCount) + " of " + std::to_string(maxRetryTimes));
             std::this_thread::sleep_for(std::chrono::seconds(5));
-            // Disconnect and reset connection state before retrying
-            stop();
         }
     }
 
+    STX_LOGI(logger, "Daily data has been requested totally, exit thread now...");
     stop();
+    return true;
 }
 
 bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
@@ -308,11 +356,11 @@ int DailyDataFetcher::calculateDurationInDays(const std::string& startDate, cons
 
 bool DailyDataFetcher::waitForData() {
     std::unique_lock<std::mutex> lock(cvMutex);
-    if (!cv.wait_for(lock, std::chrono::seconds(30), [this] { return dataReceived || !connected; })) {
+    if (!cv.wait_for(lock, std::chrono::seconds(30), [this] { return dataReceived || !running.load(); })) {
         STX_LOGE(logger, "Timeout waiting for historical data");
         return false;
     }
-    if (!connected) {
+    if (!client->isConnected()) {
         STX_LOGE(logger, "Connection to IB lost while waiting for data");
         throw std::runtime_error("Connection to IB lost");
     }
@@ -343,7 +391,6 @@ void DailyDataFetcher::error(int id, int errorCode, const std::string &errorStri
 
     if (errorCode == 509 || errorCode == 1100) { 
         std::lock_guard<std::mutex> lock(cvMutex);
-        connected = false;
         dataReceived = true;
         cv.notify_one();
         
@@ -416,7 +463,9 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     // If adj_close is not provided, use regular close
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
+#ifndef __TEST__
     addToQueue(date, dbData);
+#endif
 }
 
 std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {

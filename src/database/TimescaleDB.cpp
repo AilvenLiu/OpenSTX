@@ -37,15 +37,28 @@ TimescaleDB::TimescaleDB(const std::shared_ptr<Logger>& log, const std::string &
 }
 
 TimescaleDB::~TimescaleDB() {
-    STX_LOGI(logger, "Destructor called, cleaning up resources.");
-    running.store(false);
-    if (monitoringThread.joinable()) {
-        monitoringThread.join();
+    if (!running.load()) return;
+    stop();
+}
+
+void TimescaleDB::stop() {
+    if (!running.load()) {
+        STX_LOGW(logger, "TimescaleDB is already stopped.");
+        return;
     }
+
+    running.store(false);
+    cv.notify_all();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    if (monitoringThread.joinable()) monitoringThread.join();
+
+    STX_LOGI(logger, "Cleaning up resources before exit...");
     if (conn) {
         conn.reset();
-        STX_LOGI(logger, "Disconnected from TimescaleDB.");
     }
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    STX_LOGI(logger, "Resources cleaned up and exit.");
 }
 
 void TimescaleDB::connectToDatabase() {
@@ -118,12 +131,18 @@ void TimescaleDB::reconnect(int max_attempts, int delay_seconds) {
 }
 
 void TimescaleDB::checkAndReconnect() {
+    std::mutex cvMutex;
+    std::condition_variable cv;
+
     while (running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(2)); // Check every 30 seconds
+        std::unique_lock<std::mutex> lock(cvMutex);
+        if (cv.wait_for(lock, std::chrono::seconds(2), [this] { return !running.load(); })) {
+            break; // Exit the loop if running is set to false
+        }
 
         if (!conn || !conn->is_open()) {
             STX_LOGW(logger, "Database connection lost. Attempting to reconnect...");
-            reconnect(5, 2); // Attempt to reconnect with 5 attempts and 2 seconds delay
+            reconnect(5, 2);
         }
     }
 }
