@@ -266,13 +266,9 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
 }
 
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
-    if (position >= rawL2Data.size()) {
-        rawL2Data.resize(position + 1);
-    }
-
     switch (operation) {
         case 0: // Insert
-            rawL2Data.insert(rawL2Data.begin() + position, {price, size, side == 0 ? "Buy" : "Sell"});
+            rawL2DataMap[position] = {price, size, side == 0 ? "Buy" : "Sell"};
             STX_LOGD(logger, "Market depth inserted: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Insert\"" + 
@@ -281,7 +277,7 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
                      ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
             break;
         case 1: // Update
-            rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
+            rawL2DataMap[position] = {price, size, side == 0 ? "Buy" : "Sell"};
             STX_LOGD(logger, "Market depth updated: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Update\"" + 
@@ -290,7 +286,7 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
                      ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
             break;
         case 2: // Delete
-            rawL2Data[position] = {0.0, 0, "Deleted"};
+            rawL2DataMap.erase(position);
             STX_LOGD(logger, "Market depth deleted: {\"TickerId\": " + std::to_string(id) + 
                      ", \"Position\": " + std::to_string(position) + 
                      ", \"Operation\": \"Delete\"" + 
@@ -305,13 +301,14 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
 }
 
 void RealTimeData::aggregateMinuteData() {
-    if (l1Prices.empty() || l1Volumes.empty() || rawL2Data.empty()) {
+    if (l1Prices.empty() || l1Volumes.empty() || rawL2DataMap.empty()) {
         STX_LOGW(logger, "Incomplete data. Clearing temporary data and skipping aggregation.");
         clearTemporaryData();
         return;
     }
 
     swapBuffers();
+    
     STX_LOGI(logger, "Aggregating minute data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + 
              ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + 
              ", Raw L2 Data count: " + std::to_string(rawL2DataBuffer.size()));
@@ -372,7 +369,7 @@ json RealTimeData::aggregateL2Data() {
     double minPrice = std::numeric_limits<double>::max();
     double maxPrice = std::numeric_limits<double>::lowest();
 
-    for (const auto& data : rawL2DataBuffer) {
+    for (const auto& [position, data] : rawL2DataBuffer) {
         if (data.side == "Deleted" || data.price == 0.0) continue; // Skip deleted entries
         minPrice = std::min(minPrice, data.price);
         maxPrice = std::max(maxPrice, data.price);
@@ -393,7 +390,7 @@ json RealTimeData::aggregateL2Data() {
     json l2DataJson = json::array();
     std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
-    for (const auto& data : rawL2DataBuffer) {
+    for (const auto& [position, data] : rawL2DataBuffer) {
         if (data.side == "Deleted" || data.price == 0.0) continue; // Skip deleted entries
         int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
         bucketIndex = std::clamp(bucketIndex, 0, 19);
@@ -501,7 +498,7 @@ void RealTimeData::swapBuffers() {
     dataLock.lock();
     std::swap(l1Prices, l1PricesBuffer);
     std::swap(l1Volumes, l1VolumesBuffer);
-    std::swap(rawL2Data, rawL2DataBuffer);
+    rawL2DataMap.swap(rawL2DataBuffer);
     bufferLock.unlock();
     dataLock.unlock();
 }
@@ -519,10 +516,10 @@ void RealTimeData::clearBufferData() {
 void RealTimeData::clearTemporaryData() {
     std::unique_lock<std::mutex> dataLock(dataMutex, std::defer_lock);
     dataLock.lock();
-    STX_LOGI(logger, "Clearing temporary data. L1 Prices count: " + std::to_string(l1Prices.size()) + ", L1 Volumes count: " + std::to_string(l1Volumes.size()) + ", Raw L2 Data count: " + std::to_string(rawL2Data.size()));
+    STX_LOGI(logger, "Clearing temporary data. L1 Prices count: " + std::to_string(l1Prices.size()) + ", L1 Volumes count: " + std::to_string(l1Volumes.size()) + ", Raw L2 Data count: " + std::to_string(rawL2DataMap.size()));
     l1Prices.clear();
     l1Volumes.clear();
-    rawL2Data.clear();
+    rawL2DataMap.clear();
     dataLock.unlock();
 }
 
@@ -539,11 +536,11 @@ double RealTimeData::calculateWeightedAveragePrice() const {
 double RealTimeData::calculateBuySellRatio() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
-    for (const auto& level : rawL2Data) {
-        if (level.side == "Buy") {
-            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
+    for (const auto& [position, data] : rawL2DataMap) {
+        if (data.side == "Buy") {
+            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, data.volume);
         } else {
-            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
+            totalSellVolume = DecimalFunctions::add(totalSellVolume, data.volume);
         }
     }
     return totalSellVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalBuyVolume, totalSellVolume));
@@ -553,11 +550,11 @@ Decimal RealTimeData::calculateDepthChange() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
 
-    for (const auto& level : rawL2Data) {
-        if (level.side == "Buy") {
-            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
-        } else if (level.side == "Sell") {
-            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
+    for (const auto& [position, data] : rawL2DataMap) {
+        if (data.side == "Buy") {
+            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, data.volume);
+        } else if (data.side == "Sell") {
+            totalSellVolume = DecimalFunctions::add(totalSellVolume, data.volume);
         }
     }
 

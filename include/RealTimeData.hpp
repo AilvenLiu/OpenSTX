@@ -87,10 +87,10 @@ private:
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
-    std::vector<L2DataPoint> rawL2Data;
+    std::map<int, L2DataPoint> rawL2DataMap;
     std::vector<double> l1PricesBuffer;
     std::vector<Decimal> l1VolumesBuffer;
-    std::vector<L2DataPoint> rawL2DataBuffer;
+    std::map<int, L2DataPoint> rawL2DataBuffer;
     std::queue<std::tuple<std::string, json, json, json>> dataQueue;
 
     std::condition_variable cv;
