@@ -5,7 +5,7 @@ from data.data_fetching import fetch_data_from_db, fetch_data_from_memory
 from data.data_preprocessing import preprocess_data, preprocess_symbol_data
 
 class AsyncDataLoader:
-    def __init__(self, symbols, db_config, load_from_memory=False, data=None, batch_size=32, num_workers=2, max_queue_size=5):
+    def __init__(self, symbols, db_config, load_from_memory=False, data=None, batch_size=1024, num_workers=8, max_queue_size=5):
         self.symbols = symbols
         self.db_config = db_config
         self.load_from_memory = load_from_memory

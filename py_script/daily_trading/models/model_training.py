@@ -11,6 +11,8 @@ from statsmodels.tsa.arima.model import ARIMA
 from arch import arch_model
 from tqdm import tqdm
 from strategies.combined_strategy import bollinger_bands, macd, rsi
+from lightgbm import early_stopping
+from sklearn.model_selection import train_test_split
 
 # Check if MPS (Metal Performance Shaders) is available for Apple M1
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
@@ -103,22 +105,34 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             X_train, X_test = X[start:end], X[end:end+prediction_days]
             y_train, y_test = y[start:end], y[end:end+prediction_days]
             
-            xgb_model = xgb.XGBRegressor(objective='reg:squarederror')
-            lgb_model = lgb.LGBMRegressor(objective='regression')
+            xgb_model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=200, learning_rate=0.05, early_stopping_rounds=10)
+            lgb_model = lgb.LGBMRegressor(objective='regression', n_estimators=200, learning_rate=0.05, 
+                                          num_leaves=31, feature_fraction=0.8, bagging_fraction=0.8, 
+                                          bagging_freq=5, min_child_samples=20)
             rf_model = RandomForestRegressor()
             
             param_grid = grid_params if grid_params else {
-                'xgb__n_estimators': [50, 100],
-                'xgb__learning_rate': [0.01, 0.1],
-                'lgb__n_estimators': [50, 100],
-                'lgb__learning_rate': [0.01, 0.1],
+                'xgb__n_estimators': [100, 200],
+                'xgb__learning_rate': [0.01, 0.05],
+                'lgb__n_estimators': [100, 200],
+                'lgb__learning_rate': [0.01, 0.05],
+                'lgb__num_leaves': [31, 63],
                 'rf__n_estimators': [50, 100],
                 'rf__max_depth': [5, 10]
             }
             
             ensemble_model = VotingRegressor(estimators=[('xgb', xgb_model), ('lgb', lgb_model), ('rf', rf_model)])
             grid_search = GridSearchCV(estimator=ensemble_model, param_grid=param_grid, cv=3, n_jobs=-1)
-            grid_search.fit(X_train, y_train)
+            X_train, X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.2, random_state=42)
+            grid_search.fit(X_train, y_train, 
+                            lgb__eval_set=[(X_val, y_val)],
+                            lgb__eval_metric='l2',
+                            lgb__early_stopping_rounds=10,
+                            lgb__verbose=0,
+                            xgb__eval_set=[(X_val, y_val)],
+                            xgb__eval_metric='rmse',
+                            xgb__early_stopping_rounds=10,
+                            xgb__verbose=0)
             best_model = grid_search.best_estimator_
             
             X_train_lstm = X_train.values.reshape((X_train.shape[0], 1, X_train.shape[1]))

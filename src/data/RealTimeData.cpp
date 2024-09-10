@@ -47,7 +47,7 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
     if (!logger) {
         throw std::runtime_error("Loggeris null");
     }
-#ifndef __TEST
+#ifndef __TEST__
     if (!db) {
         throw std::runtime_error("TimescaleDB is null");
     }
@@ -335,8 +335,9 @@ void RealTimeData::aggregateMinuteData() {
         auto features = calculateFeatures(l1Data, l2Data);
         
         std::string datetime = getCurrentDateTime();
-
+#ifndef __TEST__
         addToQueue(datetime, l1Data, l2Data, features);
+#endif
         writeToSharedMemory(createCombinedJson(datetime, l1Data, l2Data, features));
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error in aggregateMinuteData: " + std::string(e.what()));

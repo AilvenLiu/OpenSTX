@@ -52,14 +52,8 @@ TestMode parseTestMode(const std::string& mode) {
     if (mode == "both") return TestMode::BOTH;
     throw std::invalid_argument("Invalid test mode. Use 'daily', 'realtime', or 'both'.");
 }
-#endif
 
-void signalHandler(int signum) {
-    std::cout << "\nInterrupt signal (" << signum << ") received.\n";
-    running.store(false);
-    cv.notify_all();
-}
-
+#else
 bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     auto now = std::chrono::system_clock::now();
     auto utc_time = std::chrono::system_clock::to_time_t(now);
@@ -80,6 +74,13 @@ bool isMarketOpenTime(const std::shared_ptr<Logger>& logger) {
     STX_LOGD(logger, "Current New York Time: " + datetime + ", week: " + std::to_string(ny_time.tm_wday) + ", market is " + (opened ? "open" : "close"));
 
     return open && !weekend;
+}
+#endif
+
+void signalHandler(int signum) {
+    std::cout << "\nInterrupt signal (" << signum << ") received.\n";
+    running.store(false);
+    cv.notify_all();
 }
 
 int main(int argc, char* argv[]) {

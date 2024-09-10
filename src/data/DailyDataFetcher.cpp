@@ -44,14 +44,14 @@ DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const 
     if (!logger) {
         throw std::runtime_error("Logger is null");
     }
-#ifndef __TEST
+#ifndef __TEST__
     if (!db) {
         throw std::runtime_error("TimescaleDB is null");
     }
+#endif
 
     STX_LOGI(logger, "DailyDataFetcher object created successfully.");
 }
-#endif
 
 DailyDataFetcher::~DailyDataFetcher() {
     if (running.load()) stop();

@@ -10,4 +10,5 @@ statsmodels
 arch
 tqdm
 psycopg2-binary
+sqlalchemy
 # brew install libomp
