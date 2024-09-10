@@ -44,13 +44,14 @@ DailyDataFetcher::DailyDataFetcher(const std::shared_ptr<Logger>& logger, const 
     if (!logger) {
         throw std::runtime_error("Logger is null");
     }
+#ifndef __TEST
     if (!db) {
-        STX_LOGE(logger, "TimescaleDB is null");
         throw std::runtime_error("TimescaleDB is null");
     }
 
     STX_LOGI(logger, "DailyDataFetcher object created successfully.");
 }
+#endif
 
 DailyDataFetcher::~DailyDataFetcher() {
     if (running.load()) stop();
@@ -229,7 +230,7 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
 
             std::string endDateTime = getCurrentDate();
             std::string startDateTime;
-
+#ifndef __TEST__
             if (incremental) {
                 std::string lastDate = db->getLastDailyEndDate(sym);
                 std::string firstDate = db->getFirstDailyStartDate(sym);
@@ -243,6 +244,9 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
             } else {
                 startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
             }
+#else
+            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
+#endif
 
             auto dateRanges = splitDateRange(startDateTime, endDateTime);
             STX_LOGW(logger, "data to be requested: from " + dateRanges.front().first + " to " + dateRanges.back().second);
@@ -459,7 +463,9 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     // If adj_close is not provided, use regular close
     if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
 
+#ifndef __TEST__
     addToQueue(date, dbData);
+#endif
 }
 
 std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {

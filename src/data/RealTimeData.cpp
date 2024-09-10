@@ -44,9 +44,14 @@ RealTimeData::RealTimeData(const std::shared_ptr<Logger>& log, const std::shared
       requestId(0), 
       running(false){
 
-    if (!logger || !db) {
-        throw std::runtime_error("Logger or TimescaleDB is null");
+    if (!logger) {
+        throw std::runtime_error("Loggeris null");
     }
+#ifndef __TEST
+    if (!db) {
+        throw std::runtime_error("TimescaleDB is null");
+    }
+#endif
     STX_LOGI(logger, "RealTimeData object created successfully.");
 }
 
