@@ -65,10 +65,11 @@ private:
     struct L2DataPoint {
         double price;
         Decimal volume;
-        std::string side; // "Buy" or "Sell"
+        std::string side;
+        std::string status;
 
-        L2DataPoint() : price(0.0), volume(0), side("") {}
-        L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
+        L2DataPoint() : price(0.0), volume(0), side(""), status("") {}
+        L2DataPoint(double p, Decimal v, const std::string& s, const std::string& st) : price(p), volume(v), side(s), status(st) {}
     };
 
     std::shared_ptr<Logger> logger;
@@ -87,17 +88,16 @@ private:
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
-    std::map<int, L2DataPoint> rawL2DataMap;
+    std::map<int, std::vector<L2DataPoint>> rawL2Data;
     std::vector<double> l1PricesBuffer;
     std::vector<Decimal> l1VolumesBuffer;
-    std::map<int, L2DataPoint> rawL2DataBuffer;
+    std::map<int, std::vector<L2DataPoint>> rawL2DataBuffer;
     std::queue<std::tuple<std::string, json, json, json>> dataQueue;
 
     std::condition_variable cv;
     std::condition_variable queueCV;
 
     std::mutex dataMutex;
-    std::mutex bufferMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
     std::mutex cvMutex;

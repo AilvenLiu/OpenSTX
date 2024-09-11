@@ -266,33 +266,31 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
 }
 
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
+    std::string sideStr = side == 0 ? "Buy" : "Sell";
+
     switch (operation) {
-        case 0: // Insert
-            rawL2DataMap[position] = {price, size, side == 0 ? "Buy" : "Sell"};
-            STX_LOGD(logger, "Market depth inserted: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Insert\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 0:
+            rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
             break;
-        case 1: // Update
-            rawL2DataMap[position] = {price, size, side == 0 ? "Buy" : "Sell"};
-            STX_LOGD(logger, "Market depth updated: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Update\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 1:
+            if (!rawL2Data[position].empty()) {
+                auto& latest = rawL2Data[position].back();
+                if (latest.status != "Deleted") {
+                    latest.price = price;
+                    latest.volume = size;
+                    latest.status = "Updated";
+                } else {
+                    rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
+                }
+            } else {
+                rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
+            }
             break;
-        case 2: // Delete
-            rawL2DataMap.erase(position);
-            STX_LOGD(logger, "Market depth deleted: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Delete\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 2: 
+            if (!rawL2Data[position].empty()) {
+                auto& latest = rawL2Data[position].back();
+                latest.status = "Deleted";
+            }
             break;
         default:
             STX_LOGW(logger, "Unknown operation in updateMktDepth: " + std::to_string(operation));
@@ -301,13 +299,14 @@ void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int 
 }
 
 void RealTimeData::aggregateMinuteData() {
-    if (l1Prices.empty() || l1Volumes.empty() || rawL2DataMap.empty()) {
+    if (l1Prices.empty() || l1Volumes.empty() || rawL2Data.empty()) {
         STX_LOGW(logger, "Incomplete data. Clearing temporary data and skipping aggregation.");
         clearTemporaryData();
         return;
     }
 
     swapBuffers();
+    moveDeletedItemsToBuffer();
     
     STX_LOGI(logger, "Aggregating minute data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + 
              ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + 
@@ -492,25 +491,81 @@ std::string RealTimeData::createCombinedJson(const std::string& datetime, const 
 }
 
 void RealTimeData::swapBuffers() {
-    std::unique_lock<std::mutex> bufferLock(bufferMutex, std::defer_lock);
     std::unique_lock<std::mutex> dataLock(dataMutex, std::defer_lock);
-    bufferLock.lock();
     dataLock.lock();
     std::swap(l1Prices, l1PricesBuffer);
     std::swap(l1Volumes, l1VolumesBuffer);
-    rawL2DataMap.swap(rawL2DataBuffer);
-    bufferLock.unlock();
     dataLock.unlock();
 }
 
+void RealTimeData::moveDeletedItemsToBuffer() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    for (auto& [position, dataPoints] : rawL2Data) {
+        auto it = std::stable_partition(dataPoints.begin(), dataPoints.end(),
+            [](const L2DataPoint& point) { return point.operation != "Deleted"; });
+        
+        rawL2DataBuffer[position].insert(rawL2DataBuffer[position].end(),
+            std::make_move_iterator(it), std::make_move_iterator(dataPoints.end()));
+        
+        dataPoints.erase(it, dataPoints.end());
+    }
+}
+
+json RealTimeData::aggregateL2Data() {
+    double minPrice = std::numeric_limits<double>::max();
+    double maxPrice = std::numeric_limits<double>::lowest();
+    std::map<int, L2DataPoint> currentState;
+
+    // First pass: determine price range and build current state
+    {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        for (const auto& [position, dataPoints] : rawL2Data) {
+            if (!dataPoints.empty()) {
+                const auto& latest = dataPoints.back();
+                currentState[position] = latest;
+                if (latest.price > 0.0) {
+                    minPrice = std::min(minPrice, latest.price);
+                    maxPrice = std::max(maxPrice, latest.price);
+                }
+            }
+        }
+    }
+
+    // Aggregate data...
+    std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
+    double interval = (maxPrice - minPrice) / 20;
+
+    for (const auto& [position, data] : currentState) {
+        int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
+        bucketIndex = std::clamp(bucketIndex, 0, 19);
+
+        if (data.side == "Buy") {
+            priceLevelBuckets[bucketIndex].first = DecimalFunctions::add(priceLevelBuckets[bucketIndex].first, data.volume);
+        } else {
+            priceLevelBuckets[bucketIndex].second = DecimalFunctions::add(priceLevelBuckets[bucketIndex].second, data.volume);
+        }
+    }
+
+    // Create JSON output...
+    json l2DataJson = json::array();
+    for (int i = 0; i < 20; ++i) {
+        double midPrice = minPrice + (i + 0.5) * interval;
+        json level = {
+            {"Price", midPrice},
+            {"BuyVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].first)},
+            {"SellVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].second)}
+        };
+        l2DataJson.push_back(level);
+    }
+
+    return l2DataJson;
+}
+
 void RealTimeData::clearBufferData() {
-    std::unique_lock<std::mutex> bufferLock(bufferMutex, std::defer_lock);
-    bufferLock.lock();
     STX_LOGI(logger, "Clearing buffer data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + ", Raw L2 Data count: " + std::to_string(rawL2DataBuffer.size()));
     l1PricesBuffer.clear();
     l1VolumesBuffer.clear();
     rawL2DataBuffer.clear();
-    bufferLock.unlock();
 }
 
 void RealTimeData::clearTemporaryData() {
