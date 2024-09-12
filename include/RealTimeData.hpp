@@ -93,6 +93,9 @@ private:
     std::vector<Decimal> l1VolumesBuffer;
     std::map<int, std::vector<L2DataPoint>> rawL2DataBuffer;
     std::queue<std::tuple<std::string, json, json, json>> dataQueue;
+    std::deque<double> historicalClosePrices;
+    std::deque<double> historicalVolumes;
+    const size_t MAX_HISTORY_SIZE = 60; 
 
     std::condition_variable cv;
     std::condition_variable queueCV;
@@ -121,6 +124,7 @@ private:
     void handleConnectionError(int errorCode);
     void handleRateLimitExceeded();
 
+    void updateHistoricalData();
     json calculateFeatures(const json& l1Data, const json& l2Data);
     std::string getCurrentDateTime() const;
     std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
@@ -132,7 +136,7 @@ private:
     void moveDeletedItemsToBuffer();
     void clearBufferData();
     void clearTemporaryData();
-    const int countL2data(const std::map<int, std::vector<L2DataPoint>>& l2data) const;
+    int countL2data(const std::map<int, std::vector<L2DataPoint>>& l2data) const;
 
     void reconnect();
     void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
@@ -141,7 +145,7 @@ private:
     double calculateWeightedAveragePrice() const;
     double calculateBuySellRatio() const;
     Decimal calculateDepthChange() const;
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const;
+    double calculateImpliedLiquidity() const;
     double calculatePriceMomentum() const;
     double calculateTradeDensity() const;
     double calculateRSI() const;
