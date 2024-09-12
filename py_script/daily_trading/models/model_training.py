@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size=50, num_layers=2, output_size=1):
+    def __init__(self, input_size, hidden_size=256, num_layers=2, output_size=1):
         super(LSTMModel, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -30,35 +30,39 @@ class LSTMModel(nn.Module):
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         out, _ = self.lstm(x, (h0, c0))
         out = self.fc(out[:, -1, :])
-        return out
+        return out.squeeze(-1)
 
 class TransformerModel(nn.Module):
     def __init__(self, input_size, num_heads=2, num_layers=2, output_size=1):
         super(TransformerModel, self).__init__()
-        self.transformer = nn.Transformer(input_size, num_heads, num_layers)
+        self.transformer = nn.Transformer(d_model=input_size, nhead=num_heads, num_encoder_layers=num_layers)
         self.fc = nn.Linear(input_size, output_size)
 
     def forward(self, x):
-        out = self.transformer(x)
-        out = self.fc(out[:, -1, :])
-        return out
+        # Transformer expects input shape (seq_len, batch_size, input_size)
+        x = x.permute(1, 0, 2)
+        out = self.transformer(x, x)  # Using the same input for src and tgt
+        out = out[-1, :, :]  # Take the last sequence element
+        out = self.fc(out)
+        return out.squeeze(-1)
 
-def train_lstm_model(X_train, y_train, input_size, hidden_size=50, num_layers=2, epochs=10, lr=0.001):
+def train_lstm_model(X_train, y_train, input_size, hidden_size=256, num_layers=2, epochs=10, lr=0.001):
     model = LSTMModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, output_size=1).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     
-    dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+    dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
     
     model.train()
     for epoch in tqdm(range(epochs), desc="Training LSTM Model"):
         for X_batch, y_batch in dataloader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
-            loss = criterion(outputs, y_batch.unsqueeze(1))
+            loss = criterion(outputs, y_batch)
             loss.backward()
             optimizer.step()
         scheduler.step()
@@ -71,16 +75,17 @@ def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layer
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     
-    dataset = TensorDataset(torch.tensor(X_train, dtype=torch.float32), torch.tensor(y_train, dtype=torch.float32))
-    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+    dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
     
     model.train()
     for epoch in tqdm(range(epochs), desc="Training Transformer Model"):
         for X_batch, y_batch in dataloader:
-            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
-            loss = criterion(outputs, y_batch.unsqueeze(1))
+            loss = criterion(outputs, y_batch)
             loss.backward()
             optimizer.step()
         scheduler.step()
