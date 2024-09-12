@@ -129,8 +129,11 @@ private:
     void writeToDatabaseFunc();
     
     void swapBuffers();
+    void moveDeletedItemsToBuffer();
     void clearBufferData();
     void clearTemporaryData();
+    const int countL2data(const std::map<int, std::vector<L2DataPoint>>& l2data) const;
+
     void reconnect();
     void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
     void joinThreads();
