@@ -82,4 +82,7 @@ def generate_trading_signals(predictions, actual_prices, data, short_window=40, 
         else:
             signals.append("hold")
     
+    if len(signals) < len(predictions):
+        signals.extend(["hold"] * (len(predictions) - len(signals)))
+    
     return signals

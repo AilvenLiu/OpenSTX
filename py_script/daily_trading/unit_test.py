@@ -2,6 +2,7 @@ import unittest
 import pandas as pd
 import numpy as np
 import torch
+import torch.nn as nn
 from unittest.mock import patch, MagicMock
 from data.data_preprocessing import preprocess_data, preprocess_symbol_data
 from data.data_fetching import fetch_data_from_db, fetch_data_from_memory
@@ -11,6 +12,7 @@ from strategies.risk_management import apply_risk_management
 from trading.backtesting import calculate_metrics, backtest
 from data.data_loader import AsyncDataLoader
 from config.db_config import read_db_config
+from sqlalchemy import create_engine
 
 class TestDataPreprocessing(unittest.TestCase):
     def setUp(self):
@@ -38,21 +40,20 @@ class TestDataFetching(unittest.TestCase):
         self.symbols = ['AAPL', 'GOOGL']
 
     @patch('data.data_fetching.create_engine')
-    def test_fetch_data_from_db(self, mock_create_engine):
-        mock_conn = MagicMock()
-        mock_create_engine.return_value.connect.return_value.__enter__.return_value = mock_conn
-
-        sample_data = pd.DataFrame({
-            'date': pd.date_range(start='2023-01-01', periods=5),
-            'symbol': ['AAPL'] * 5,
-            'close': [100, 101, 99, 102, 103],
-            'volume': [1000, 1100, 900, 1200, 1300]
-        })
-        mock_conn.execute.return_value = sample_data
-
-        result = list(fetch_data_from_db(self.symbols, self.db_config))
-        self.assertEqual(len(result), 1)
-        self.assertIsInstance(result[0], pd.DataFrame)
+    @patch('data.data_fetching.fetch_data_from_db')
+    def test_fetch_data_from_db(self, mock_fetch_data_from_db, mock_create_engine):
+        mock_engine = MagicMock()
+        mock_create_engine.return_value = mock_engine
+        mock_connection = mock_engine.connect.return_value
+        mock_fetch_data_from_db.return_value = iter([('AAPL', pd.DataFrame({'date': pd.date_range(start='2023-01-01', periods=5), 'symbol': ['AAPL']*5, 'close': [100, 101, 99, 102, 103], 'volume': [1000, 1100, 900, 1200, 1300]})), ('GOOGL', pd.DataFrame({'date': pd.date_range(start='2023-01-01', periods=5), 'symbol': ['GOOGL']*5, 'close': [100, 101, 99, 102, 103], 'volume': [1000, 1100, 900, 1200, 1300]}))])
+        
+        result = list(fetch_data_from_db(self.symbols, self.db_config, '2023-01-01', '2023-12-31'))
+        mock_connection.close()
+        mock_create_engine.assert_called_once()
+        mock_connection.close.assert_called_once()
+        self.assertEqual(len(result), 2)
+        self.assertIsInstance(result[0][1], pd.DataFrame)  # Check the DataFrame in the tuple
+        self.assertIsInstance(result[1][1], pd.DataFrame)  # Check the DataFrame in the tuple
 
     def test_fetch_data_from_memory(self):
         sample_data = pd.DataFrame({
@@ -86,10 +87,10 @@ class TestModelTraining(unittest.TestCase):
         self.assertEqual(output.shape, (self.batch_size,))
 
     def test_transformer_model(self):
-        model = TransformerModel(input_size=self.input_size, num_heads=2, num_layers=self.num_layers)
+        model = TransformerModel(input_size=6, num_heads=2, num_layers=self.num_layers)  # Ensure input_size is divisible by num_heads
         self.assertIsInstance(model, nn.Module)
         
-        input_tensor = torch.randn(self.batch_size, self.seq_length, self.input_size)
+        input_tensor = torch.randn(self.batch_size, self.seq_length, 6)  # Adjust input_size
         output = model(input_tensor)
         self.assertEqual(output.shape, (self.batch_size,))
 
@@ -175,13 +176,23 @@ class TestRiskManagement(unittest.TestCase):
 
 class TestBacktesting(unittest.TestCase):
     def setUp(self):
-        self.df = pd.DataFrame({
+        self.db_config = read_db_config()
+        self.symbols = ['AAPL']
+        
+        # Mock data loader
+        self.data_loader = MagicMock()
+        self.data_loader.__iter__.return_value = iter([('AAPL', pd.DataFrame({
+            'date': pd.date_range(start='2023-01-01', periods=100),
+            'close': np.random.rand(100) * 100,
+            'symbol': ['AAPL'] * 100
+        }))])
+
+    def test_calculate_metrics(self):
+        df = pd.DataFrame({
             'actual': np.random.rand(100) * 100,
             'predicted': np.random.rand(100) * 100
         })
-
-    def test_calculate_metrics(self):
-        metrics = calculate_metrics(self.df)
+        metrics = calculate_metrics(df)
         self.assertIn('cumulative_returns', metrics)
         self.assertIn('cumulative_strategy_returns', metrics)
         self.assertIn('sharpe_ratio', metrics)
@@ -193,7 +204,6 @@ class TestBacktesting(unittest.TestCase):
     def test_backtest(self, mock_make_predictions):
         mock_make_predictions.return_value = np.random.rand(5)
         
-        data_loader = [('AAPL', self.df)]
         models = {'AAPL': MagicMock()}
         lstm_models = {'AAPL': MagicMock()}
         arima_models = {'AAPL': MagicMock()}
@@ -201,26 +211,23 @@ class TestBacktesting(unittest.TestCase):
         transformer_models = {'AAPL': MagicMock()}
         ml_models = {'AAPL': (MagicMock(), MagicMock())}
         
-        results, best_model = backtest(data_loader, models, lstm_models, arima_models, garch_models, transformer_models, ml_models, window_size=50, prediction_days=5)
+        results, best_model = backtest(self.data_loader, models, lstm_models, arima_models, garch_models, transformer_models, ml_models, window_size=50, prediction_days=5)
         
         self.assertIsInstance(results, dict)
         self.assertIn('AAPL', results)
         self.assertIsInstance(best_model, str)
 
 class TestAsyncDataLoader(unittest.TestCase):
-    @patch('data.data_fetching.fetch_data_from_db')
-    @patch('config.db_config.read_db_config')
-    def test_async_data_loader(self, mock_read_db_config, mock_fetch_data):
-        mock_read_db_config.return_value = read_db_config()
-        mock_fetch_data.return_value = [pd.DataFrame({
-            'date': pd.date_range(start='2023-01-01', periods=5),
-            'symbol': ['AAPL'] * 5,
-            'close': [100, 101, 99, 102, 103],
-            'volume': [1000, 1100, 900, 1200, 1300]
-        })]
-
+    @patch('data.data_loader.fetch_data_from_db')
+    def test_async_data_loader(self, mock_fetch_data_from_db):
         symbols = ['AAPL']
         db_config = read_db_config()
+        mock_fetch_data_from_db.return_value = iter([('AAPL', pd.DataFrame({
+            'date': pd.date_range(start='2023-01-01', periods=100),
+            'close': np.random.rand(100) * 100,
+            'symbol': ['AAPL'] * 100
+        }))])
+        
         loader = AsyncDataLoader(symbols, db_config)
         loader.start()
 

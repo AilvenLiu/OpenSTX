@@ -362,7 +362,7 @@ json RealTimeData::aggregateL1Data() {
         {"High", high},
         {"Low", low},
         {"Close", close},
-        {"Volume", DecimalFunctions::decimalToDouble(volume)}
+        {"Volume", DecimalFunctions::decimalToString(volume)}
     };
 }
 
@@ -418,8 +418,8 @@ json RealTimeData::aggregateL2Data() {
         double midPrice = minPrice + (i + 0.5) * interval;
         json level = {
             {"Price", midPrice},
-            {"BuyVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].first)},
-            {"SellVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].second)}
+            {"BuyVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].first)},
+            {"SellVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].second)}
         };
         l2DataJson.push_back(level);
     }
@@ -467,7 +467,7 @@ json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
     return {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
-        {"DepthChange", DecimalFunctions::decimalToDouble(depthChange)},
+        {"DepthChange", DecimalFunctions::decimalToString(depthChange)},
         {"ImpliedLiquidity", impliedLiquidity},
         {"PriceMomentum", priceMomentum},
         {"TradeDensity", tradeDensity},

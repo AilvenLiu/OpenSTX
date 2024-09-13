@@ -4,7 +4,6 @@ def preprocess_data(df):
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
     df.sort_index(inplace=True)
-    df.dropna(inplace=True)
     return df
 
 def preprocess_symbol_data(df, symbol):

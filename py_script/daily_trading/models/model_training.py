@@ -47,6 +47,7 @@ class TransformerModel(nn.Module):
         return out.squeeze(-1)
 
 def train_lstm_model(X_train, y_train, input_size, hidden_size=256, num_layers=2, epochs=10, lr=0.001):
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = LSTMModel(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers, output_size=1).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -60,6 +61,7 @@ def train_lstm_model(X_train, y_train, input_size, hidden_size=256, num_layers=2
     model.train()
     for epoch in tqdm(range(epochs), desc="Training LSTM Model"):
         for X_batch, y_batch in dataloader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)
@@ -70,6 +72,7 @@ def train_lstm_model(X_train, y_train, input_size, hidden_size=256, num_layers=2
     return model
 
 def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layers=2, epochs=10, lr=0.001):
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerModel(input_size=input_size, num_heads=num_heads, num_layers=num_layers, output_size=1).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -83,6 +86,7 @@ def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layer
     model.train()
     for epoch in tqdm(range(epochs), desc="Training Transformer Model"):
         for X_batch, y_batch in dataloader:
+            X_batch, y_batch = X_batch.to(device), y_batch.to(device)
             optimizer.zero_grad()
             outputs = model(X_batch)
             loss = criterion(outputs, y_batch)

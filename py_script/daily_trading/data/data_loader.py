@@ -36,11 +36,10 @@ class AsyncDataLoader:
                 else:
                     data_generator = fetch_data_from_db(self.symbols, self.db_config)
                 
-                for chunk in data_generator:
+                for symbol, chunk in data_generator:
                     processed_chunk = preprocess_data(chunk)
-                    for symbol in self.symbols:
-                        symbol_data = preprocess_symbol_data(processed_chunk, symbol)
-                        self.queue.put((symbol, symbol_data), block=True, timeout=1)
+                    symbol_data = preprocess_symbol_data(processed_chunk, symbol)
+                    self.queue.put((symbol, symbol_data), block=True, timeout=1)
                     if self.stop_event.is_set():
                         break
             except queue.Full:
