@@ -40,20 +40,42 @@ class TestDataFetching(unittest.TestCase):
         self.symbols = ['AAPL', 'GOOGL']
 
     @patch('data.data_fetching.create_engine')
-    @patch('data.data_fetching.fetch_data_from_db')
-    def test_fetch_data_from_db(self, mock_fetch_data_from_db, mock_create_engine):
+    @patch('pandas.read_sql')
+    def test_fetch_data_from_db(self, mock_read_sql, mock_create_engine):
         mock_engine = MagicMock()
         mock_create_engine.return_value = mock_engine
-        mock_connection = mock_engine.connect.return_value
-        mock_fetch_data_from_db.return_value = iter([('AAPL', pd.DataFrame({'date': pd.date_range(start='2023-01-01', periods=5), 'symbol': ['AAPL']*5, 'close': [100, 101, 99, 102, 103], 'volume': [1000, 1100, 900, 1200, 1300]})), ('GOOGL', pd.DataFrame({'date': pd.date_range(start='2023-01-01', periods=5), 'symbol': ['GOOGL']*5, 'close': [100, 101, 99, 102, 103], 'volume': [1000, 1100, 900, 1200, 1300]}))])
-        
+        mock_connection = mock_engine.connect.return_value.__enter__.return_value
+
+        sample_data = {
+            'AAPL': pd.DataFrame({
+                'date': pd.date_range(start='2023-01-01', periods=5),
+                'symbol': ['AAPL'] * 5,
+                'close': [100, 101, 99, 102, 103],
+                'volume': [1000, 1100, 900, 1200, 1300]
+            }),
+            'GOOGL': pd.DataFrame({
+                'date': pd.date_range(start='2023-01-01', periods=5),
+                'symbol': ['GOOGL'] * 5,
+                'close': [1500, 1510, 1490, 1520, 1530],
+                'volume': [500, 550, 450, 600, 650]
+            })
+        }
+
+        def mock_read_sql_side_effect(query, conn, chunksize):
+            symbol = query.split('FROM')[1].split('WHERE')[0].strip()
+            yield sample_data[symbol]
+
+        mock_read_sql.side_effect = mock_read_sql_side_effect
+
         result = list(fetch_data_from_db(self.symbols, self.db_config, '2023-01-01', '2023-12-31'))
-        mock_connection.close()
+        
         mock_create_engine.assert_called_once()
-        mock_connection.close.assert_called_once()
-        self.assertEqual(len(result), 2)
-        self.assertIsInstance(result[0][1], pd.DataFrame)  # Check the DataFrame in the tuple
-        self.assertIsInstance(result[1][1], pd.DataFrame)  # Check the DataFrame in the tuple
+        self.assertEqual(mock_read_sql.call_count, len(self.symbols))
+        self.assertEqual(len(result), len(self.symbols))
+        for symbol, data in result:
+            self.assertIn(symbol, self.symbols)
+            self.assertIsInstance(data, pd.DataFrame)
+            self.assertEqual(len(data), 5)
 
     def test_fetch_data_from_memory(self):
         sample_data = pd.DataFrame({
@@ -75,22 +97,22 @@ class TestModelTraining(unittest.TestCase):
         self.hidden_size = 64
         self.num_layers = 2
         self.device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.X_train = np.random.randn(self.batch_size, self.seq_length, self.input_size)
-        self.y_train = np.random.randn(self.batch_size)
+        self.X_train = torch.randn(self.batch_size, self.seq_length, self.input_size, device=self.device)
+        self.y_train = torch.randn(self.batch_size, device=self.device)
 
     def test_lstm_model(self):
-        model = LSTMModel(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.num_layers)
+        model = LSTMModel(input_size=self.input_size, hidden_size=self.hidden_size, num_layers=self.num_layers).to(self.device)
         self.assertIsInstance(model, nn.Module)
         
-        input_tensor = torch.randn(self.batch_size, self.seq_length, self.input_size)
+        input_tensor = torch.randn(self.batch_size, self.seq_length, self.input_size, device=self.device)
         output = model(input_tensor)
         self.assertEqual(output.shape, (self.batch_size,))
 
     def test_transformer_model(self):
-        model = TransformerModel(input_size=6, num_heads=2, num_layers=self.num_layers)  # Ensure input_size is divisible by num_heads
+        model = TransformerModel(input_size=6, num_heads=2, num_layers=self.num_layers).to(self.device)  # Ensure input_size is divisible by num_heads
         self.assertIsInstance(model, nn.Module)
         
-        input_tensor = torch.randn(self.batch_size, self.seq_length, 6)  # Adjust input_size
+        input_tensor = torch.randn(self.batch_size, self.seq_length, 6, device=self.device)  # Adjust input_size
         output = model(input_tensor)
         self.assertEqual(output.shape, (self.batch_size,))
 
@@ -99,11 +121,10 @@ class TestModelTraining(unittest.TestCase):
     @patch('torch.optim.lr_scheduler.StepLR')
     def test_train_lstm_model(self, mock_scheduler, mock_adam, mock_lstm):
         mock_lstm_instance = mock_lstm.return_value
-        mock_lstm_instance.return_value = (torch.randn(self.batch_size, self.seq_length, self.hidden_size), 
-                                           (torch.randn(self.num_layers, self.batch_size, self.hidden_size), 
-                                            torch.randn(self.num_layers, self.batch_size, self.hidden_size)))
-        with patch('models.model_training.device', self.device):
-            model = train_lstm_model(self.X_train, self.y_train, input_size=self.input_size, hidden_size=self.hidden_size, epochs=1)
+        mock_lstm_instance.return_value = (torch.randn(self.batch_size, self.seq_length, self.hidden_size, device=self.device), 
+                                           (torch.randn(self.num_layers, self.batch_size, self.hidden_size, device=self.device), 
+                                            torch.randn(self.num_layers, self.batch_size, self.hidden_size, device=self.device)))
+        model = train_lstm_model(self.X_train, self.y_train, input_size=self.input_size, hidden_size=self.hidden_size, epochs=1)
         self.assertIsNotNone(model)
         mock_lstm.assert_called_once()
         mock_adam.assert_called_once()
@@ -114,9 +135,8 @@ class TestModelTraining(unittest.TestCase):
     @patch('torch.optim.lr_scheduler.StepLR')
     def test_train_transformer_model(self, mock_scheduler, mock_adam, mock_transformer):
         mock_transformer_instance = mock_transformer.return_value
-        mock_transformer_instance.return_value = torch.randn(self.seq_length, self.batch_size, self.input_size)
-        with patch('models.model_training.device', self.device):
-            model = train_transformer_model(self.X_train, self.y_train, input_size=self.input_size, num_heads=2, num_layers=2, epochs=1)
+        mock_transformer_instance.return_value = torch.randn(self.seq_length, self.batch_size, self.input_size, device=self.device)
+        model = train_transformer_model(self.X_train, self.y_train, input_size=self.input_size, num_heads=2, num_layers=2, epochs=1)
         self.assertIsNotNone(model)
         mock_transformer.assert_called_once()
         mock_adam.assert_called_once()
@@ -157,7 +177,7 @@ class TestCombinedStrategy(unittest.TestCase):
         scaler.transform.return_value = np.random.rand(100, 10)
         
         signals = generate_trading_signals(predictions, actual_prices, self.data, ml_model=ml_model, scaler=scaler)
-        self.assertEqual(len(signals), 100)
+        self.assertEqual(len(signals), len(predictions))
         self.assertTrue(all(signal in ["buy", "sell", "hold"] for signal in signals))
 
 class TestRiskManagement(unittest.TestCase):
@@ -219,14 +239,19 @@ class TestBacktesting(unittest.TestCase):
 
 class TestAsyncDataLoader(unittest.TestCase):
     @patch('data.data_loader.fetch_data_from_db')
-    def test_async_data_loader(self, mock_fetch_data_from_db):
+    @patch('data.data_loader.preprocess_data')
+    @patch('data.data_loader.preprocess_symbol_data')
+    def test_async_data_loader(self, mock_preprocess_symbol_data, mock_preprocess_data, mock_fetch_data_from_db):
         symbols = ['AAPL']
         db_config = read_db_config()
-        mock_fetch_data_from_db.return_value = iter([('AAPL', pd.DataFrame({
+        sample_data = pd.DataFrame({
             'date': pd.date_range(start='2023-01-01', periods=100),
             'close': np.random.rand(100) * 100,
             'symbol': ['AAPL'] * 100
-        }))])
+        })
+        mock_fetch_data_from_db.return_value = iter([('AAPL', sample_data)])
+        mock_preprocess_data.return_value = sample_data
+        mock_preprocess_symbol_data.return_value = sample_data
         
         loader = AsyncDataLoader(symbols, db_config)
         loader.start()
