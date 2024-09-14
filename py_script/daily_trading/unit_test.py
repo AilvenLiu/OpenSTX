@@ -109,10 +109,16 @@ class TestModelTraining(unittest.TestCase):
         self.assertEqual(output.shape, (self.batch_size,))
 
     def test_transformer_model(self):
-        model = TransformerModel(input_size=6, num_heads=2, num_layers=self.num_layers).to(self.device)  # Ensure input_size is divisible by num_heads
+        input_size = 6  # Must be divisible by num_heads=2
+        num_heads = 2
+        num_layers = 2
+        output_size = 1
+
+        model = TransformerModel(input_size=input_size, num_heads=num_heads, num_layers=num_layers, output_size=output_size).to(self.device)
         self.assertIsInstance(model, nn.Module)
         
-        input_tensor = torch.randn(self.batch_size, self.seq_length, 6, device=self.device)  # Adjust input_size
+        # Create input tensor with correct shape
+        input_tensor = torch.randn(self.batch_size, self.seq_length, input_size, device=self.device)  # (batch_size, seq_length, features)
         output = model(input_tensor)
         self.assertEqual(output.shape, (self.batch_size,))
 
@@ -135,7 +141,7 @@ class TestModelTraining(unittest.TestCase):
     @patch('torch.optim.lr_scheduler.StepLR')
     def test_train_transformer_model(self, mock_scheduler, mock_adam, mock_transformer):
         mock_transformer_instance = mock_transformer.return_value
-        mock_transformer_instance.return_value = torch.randn(self.seq_length, self.batch_size, self.input_size, device=self.device)
+        mock_transformer_instance.return_value = torch.randn(self.batch_size, self.seq_length, self.input_size, device=self.device)
         model = train_transformer_model(self.X_train, self.y_train, input_size=self.input_size, num_heads=2, num_layers=2, epochs=1)
         self.assertIsNotNone(model)
         mock_transformer.assert_called_once()

@@ -17,6 +17,7 @@ import warnings
 import logging
 import pandas as pd
 import numpy as np
+from tenacity import retry, stop_after_delay, wait_fixed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,15 +47,25 @@ class TransformerModel(nn.Module):
         self.embed_dim = (input_size // num_heads) * num_heads  # Ensure divisibility
         if self.embed_dim == 0:
             raise ValueError(f"embed_dim and num_heads must be greater than 0, got embed_dim={self.embed_dim} and num_heads={num_heads} instead")
-        self.transformer = nn.Transformer(d_model=self.embed_dim, nhead=num_heads, num_encoder_layers=num_layers)
+        
+        self.transformer = nn.Transformer(
+            d_model=self.embed_dim,
+            nhead=num_heads,
+            num_encoder_layers=num_layers,
+            batch_first=True  # Enable batch_first
+        )
         self.fc = nn.Linear(self.embed_dim, output_size)
 
     def forward(self, x):
         if x.size(2) != self.embed_dim:
             x = nn.functional.pad(x, (0, self.embed_dim - x.size(2)))
-        x = x.permute(1, 0, 2)
+        
+        # Forward pass without permutation since batch_first=True
         out = self.transformer(x, x)
-        out = out[-1, :, :]
+        
+        # Extract the output from the last time step
+        out = out[:, -1, :]  # Shape: (batch_size, embed_dim)
+        
         out = self.fc(out)
         return out.squeeze(-1)
 
@@ -95,17 +106,16 @@ def train_lstm_model(X, y, input_size, hidden_size=256, num_layers=2, output_siz
     return model
 
 def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layers=2, epochs=10, lr=0.001):
-    if input_size <= 1:
-        raise ValueError(f"Input size for Transformer model is too small: {input_size}")
-    
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerModel(input_size=input_size, num_heads=num_heads, num_layers=num_layers, output_size=1).to(device)
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
 
-    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)
-    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)
+    # Convert data to tensors and ensure correct shape
+    X_train_tensor = torch.tensor(X_train, dtype=torch.float32).to(device)  # Shape: (num_samples, seq_length, features)
+    y_train_tensor = torch.tensor(y_train, dtype=torch.float32).to(device)  # Shape: (num_samples,)
+    
     dataset = TensorDataset(X_train_tensor, y_train_tensor)
     dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
 
@@ -113,7 +123,7 @@ def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layer
     for epoch in range(epochs):
         for X_batch, y_batch in dataloader:
             optimizer.zero_grad()
-            outputs = model(X_batch)
+            outputs = model(X_batch)  # Expected shape: (batch_size,)
             loss = criterion(outputs, y_batch)
             loss.backward()
             optimizer.step()
@@ -121,7 +131,10 @@ def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layer
 
     return model
 
+@retry(stop=stop_after_delay(3600), wait=wait_fixed(60))  # Retry for up to 1 hour, waiting 60 seconds between attempts
 def train_ensemble_model(X, y, grid_params):
+    logger.info(f"Training ensemble model with X shape: {X.shape}, y shape: {y.shape}")
+    logger.info("Starting training of ensemble model.")
     # Handle any remaining NaN or infinity values
     X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
     y = y.replace([np.inf, -np.inf], np.nan).dropna()
@@ -143,7 +156,16 @@ def train_ensemble_model(X, y, grid_params):
     )
     rf_model = RandomForestRegressor(n_estimators=100, max_depth=5)
     
-    param_grid = grid_params if grid_params else {
+    # Ensure estimator names match in VotingRegressor and param_grid
+    ensemble_model = VotingRegressor(
+        estimators=[
+            ('xgb', xgb_model),
+            ('lgb', lgb_model),
+            ('rf', rf_model)
+        ]
+    )
+
+    param_grid = {
         'xgb__n_estimators': [50, 100],
         'xgb__learning_rate': [0.01, 0.05],
         'lgb__n_estimators': [30, 50],
@@ -153,26 +175,41 @@ def train_ensemble_model(X, y, grid_params):
         'rf__max_depth': [3, 5]
     }
 
-    ensemble_model = VotingRegressor(estimators=[('xgb', xgb_model), ('lgb', lgb_model), ('rf', rf_model)])
-    grid_search = GridSearchCV(estimator=ensemble_model, param_grid=param_grid, cv=3, n_jobs=-1, verbose=0)
-    
+    grid_search = GridSearchCV(
+        estimator=ensemble_model,
+        param_grid=param_grid,
+        cv=3,
+        n_jobs=2,  # Limit to 2 parallel jobs
+        verbose=2
+    )
+
     try:
+        logger.info("Starting GridSearchCV for ensemble model.")
         grid_search.fit(X, y)
         best_model = grid_search.best_estimator_
+        logger.info("GridSearchCV completed successfully.")
+    except ValueError as ve:
+        logger.error(f"ValueError during ensemble training: {ve}")
+        best_model = None
     except Exception as e:
-        logger.error(f"Error training ensemble model: {str(e)}")
+        logger.error(f"Unexpected error during ensemble training: {e}")
         best_model = None
     
     return best_model
 
 def train_ml_model(X, y):
-    if 'close' in X.columns:
-        X = X.drop(columns=['close'])
-    
-    upper_band, lower_band = bollinger_bands(X)
-    macd_line, signal_line = macd(X)
-    rsi_values = rsi(X)
-    
+    # Reconstruct the DataFrame with 'close' included
+    data = X.copy()
+    data['close'] = y
+
+    try:
+        upper_band, lower_band = bollinger_bands(data)
+        macd_line, signal_line = macd(data)
+        rsi_values = rsi(data)
+    except KeyError as e:
+        logger.error(f"Missing column in data: {e}")
+        raise
+
     features = []
     for i in range(len(X)):
         features.append([
@@ -183,15 +220,18 @@ def train_ml_model(X, y):
             signal_line.iloc[i],
             rsi_values.iloc[i]
         ])
-    
+
     features = np.array(features)
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
-    
-    # Train a machine learning model (e.g., RandomForestClassifier)
+
+    # Prepare target variable
+    target = (y > y.shift(1)).astype(int).fillna(0)
+
+    # Train the machine learning model
     ml_model = RandomForestClassifier(n_estimators=100, random_state=42)
-    ml_model.fit(features_scaled, (y > y.shift(1)).astype(int).fillna(0))
-    
+    ml_model.fit(features_scaled, target)
+
     return ml_model, scaler
 
 def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params={}, window_size=252, prediction_days=5):
@@ -223,6 +263,7 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             
             X = symbol_data.drop(columns=['close', 'symbol'])
             y = symbol_data['close']
+            logger.info(f"symbol.shape: {symbol_data.shape}, X.shape: {X.shape}, y.shape: {y.shape}")
             
             # Set the frequency for y
             y.index.freq = 'D'
@@ -251,7 +292,9 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
                 logger.warning(f"Input size for Transformer model is too small: {X.shape[1]}. Skipping Transformer model for {symbol}.")
                 transformer_models[symbol] = None
             else:
-                transformer_models[symbol] = train_transformer_model(X_lstm, y.values, X.shape[1], **transformer_params)
+                # Reshape data for Transformer model
+                X_transformer = X.values.reshape((X.shape[0], 1, X.shape[1]))
+                transformer_models[symbol] = train_transformer_model(X_transformer, y.values, X.shape[1], **transformer_params)
             
             logger.info(f"Training ML model for {symbol}")
             ml_models[symbol] = train_ml_model(X, y)
@@ -314,23 +357,36 @@ def update_ml_model(ml_model, scaler, new_data):
     return ml_model, scaler
 
 def make_predictions(model, lstm_model, arima_model, garch_model, transformer_model, ml_model, scaler, data, prediction_days=5):
+    if isinstance(data, np.ndarray):
+        raise ValueError("Expected data to be a Pandas DataFrame, but got NumPy array.")
+    
     X = data.drop(columns=['close', 'symbol'])
-    X_lstm = X.values.reshape((X.shape[0], 1, X.shape[1]))
+    X_lstm = X.values.reshape((X.shape[0], 1, X.shape[1]))  # Shape: (num_samples, seq_length=1, features)
     
     ensemble_predictions = model.predict(X)
+    
     lstm_model.eval()
     with torch.no_grad():
         lstm_predictions = lstm_model(torch.tensor(X_lstm, dtype=torch.float32).to(device)).cpu().numpy().flatten()
     
     arima_predictions = arima_model.forecast(steps=prediction_days).values
     garch_predictions = garch_model.forecast(horizon=prediction_days).mean['h.1'].values
-    transformer_model.eval()
-    with torch.no_grad():
-        transformer_predictions = transformer_model(torch.tensor(X_lstm, dtype=torch.float32).to(device)).cpu().numpy().flatten()
+    
+    if transformer_model is not None:
+        transformer_model.eval()
+        with torch.no_grad():
+            transformer_predictions = transformer_model(torch.tensor(X_lstm, dtype=torch.float32).to(device)).cpu().numpy().flatten()
+    else:
+        transformer_predictions = np.zeros(prediction_days)
     
     # Use the machine learning model for predictions
     X_scaled = scaler.transform(X)
     ml_predictions = ml_model.predict_proba(X_scaled)[:, 1]  # Probability of price increase
     
-    predictions = (ensemble_predictions[-prediction_days:] + lstm_predictions[-prediction_days:] + arima_predictions + garch_predictions + transformer_predictions[-prediction_days:] + ml_predictions[-prediction_days:]) / 6
+    predictions = (ensemble_predictions[-prediction_days:] + 
+                   lstm_predictions[-prediction_days:] + 
+                   arima_predictions + 
+                   garch_predictions + 
+                   transformer_predictions[-prediction_days:] + 
+                   ml_predictions[-prediction_days:]) / 6
     return predictions
