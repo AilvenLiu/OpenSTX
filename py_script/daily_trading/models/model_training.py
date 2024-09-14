@@ -16,6 +16,7 @@ from sklearn.model_selection import train_test_split
 import warnings
 import logging
 import pandas as pd
+import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,17 +44,17 @@ class TransformerModel(nn.Module):
         super(TransformerModel, self).__init__()
         self.input_size = input_size
         self.embed_dim = (input_size // num_heads) * num_heads  # Ensure divisibility
+        if self.embed_dim == 0:
+            raise ValueError(f"embed_dim and num_heads must be greater than 0, got embed_dim={self.embed_dim} and num_heads={num_heads} instead")
         self.transformer = nn.Transformer(d_model=self.embed_dim, nhead=num_heads, num_encoder_layers=num_layers)
         self.fc = nn.Linear(self.embed_dim, output_size)
 
     def forward(self, x):
-        # Adjust input size if necessary
         if x.size(2) != self.embed_dim:
             x = nn.functional.pad(x, (0, self.embed_dim - x.size(2)))
-        # Transformer expects input shape (seq_len, batch_size, input_size)
         x = x.permute(1, 0, 2)
-        out = self.transformer(x, x)  # Using the same input for src and tgt
-        out = out[-1, :, :]  # Take the last sequence element
+        out = self.transformer(x, x)
+        out = out[-1, :, :]
         out = self.fc(out)
         return out.squeeze(-1)
 
@@ -94,6 +95,9 @@ def train_lstm_model(X, y, input_size, hidden_size=256, num_layers=2, output_siz
     return model
 
 def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layers=2, epochs=10, lr=0.001):
+    if input_size <= 1:
+        raise ValueError(f"Input size for Transformer model is too small: {input_size}")
+    
     device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TransformerModel(input_size=input_size, num_heads=num_heads, num_layers=num_layers, output_size=1).to(device)
     criterion = nn.MSELoss()
@@ -118,6 +122,10 @@ def train_transformer_model(X_train, y_train, input_size, num_heads=2, num_layer
     return model
 
 def train_ensemble_model(X, y, grid_params):
+    # Handle any remaining NaN or infinity values
+    X = X.replace([np.inf, -np.inf], np.nan).fillna(0)
+    y = y.replace([np.inf, -np.inf], np.nan).dropna()
+
     xgb_model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, learning_rate=0.1, max_depth=3)
     lgb_model = lgb.LGBMRegressor(
         objective='regression',
@@ -158,6 +166,9 @@ def train_ensemble_model(X, y, grid_params):
     return best_model
 
 def train_ml_model(X, y):
+    if 'close' in X.columns:
+        X = X.drop(columns=['close'])
+    
     upper_band, lower_band = bollinger_bands(X)
     macd_line, signal_line = macd(X)
     rsi_values = rsi(X)
@@ -199,14 +210,27 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             if 'date' in symbol_data.columns:
                 symbol_data.set_index('date', inplace=True)
             
+            # Convert index to DatetimeIndex if it's not already
+            if not isinstance(symbol_data.index, pd.DatetimeIndex):
+                symbol_data.index = pd.to_datetime(symbol_data.index)
+            
+            # Set frequency
+            symbol_data = symbol_data.asfreq('D')  # Set daily frequency
+            symbol_data = symbol_data.ffill()  # Forward fill missing values
+            
+            # Ensure the index is sorted
+            symbol_data = symbol_data.sort_index()
+            
             X = symbol_data.drop(columns=['close', 'symbol'])
             y = symbol_data['close']
             
-            # Convert index to DatetimeIndex if it's not already
-            if not isinstance(y.index, pd.DatetimeIndex):
-                y.index = pd.to_datetime(y.index)
+            # Set the frequency for y
+            y.index.freq = 'D'
             
-            y.index.freq = pd.infer_freq(y.index)
+            # Check if there's enough data to train models
+            if len(X) < window_size:
+                logger.warning(f"Not enough data for {symbol}. Skipping.")
+                continue
             
             logger.info(f"Training ensemble model for {symbol}")
             models[symbol] = train_ensemble_model(X, y, grid_params)
@@ -222,8 +246,12 @@ def train_models(data_loader, lstm_params={}, transformer_params={}, grid_params
             scaled_y = y / 100  # Rescale the data
             garch_models[symbol] = arch_model(scaled_y, vol='Garch', p=1, q=1).fit(disp='off')
             
-            logger.info(f"Training Transformer model for {symbol}")
-            transformer_models[symbol] = train_transformer_model(X_lstm, y.values, X.shape[1], **transformer_params)
+            logger.info(f"Training Transformer model for {symbol} with input_size={X.shape[1]}")
+            if X.shape[1] <= 1:
+                logger.warning(f"Input size for Transformer model is too small: {X.shape[1]}. Skipping Transformer model for {symbol}.")
+                transformer_models[symbol] = None
+            else:
+                transformer_models[symbol] = train_transformer_model(X_lstm, y.values, X.shape[1], **transformer_params)
             
             logger.info(f"Training ML model for {symbol}")
             ml_models[symbol] = train_ml_model(X, y)
