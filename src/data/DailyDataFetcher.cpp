@@ -326,14 +326,15 @@ bool DailyDataFetcher::requestDailyData(const std::string& symbol, const std::st
     bool useRTH = true;
     int formatDate = 1;
 
-    // Format the end date correctly
-    std::string formattedEndDate = endDate + " 23:59:59 US/Eastern";
-
+    // Correctly format the end date as "yyyyMMdd HH:mm:ss"
+    std::string formattedEndDate = endDate + " 23:59:59";
+    
     // Calculate the duration
     int durationDays = calculateDurationInDays(startDate, endDate);
     std::string duration = std::to_string(durationDays) + " D";
 
     try {
+        STX_LOGD(logger, "formattedEndDate: " + formattedEndDate + ", duration: " + duration + ", startDate:" + startDate + ", enddate: " + endDate);
         client->reqHistoricalData(nextRequestId++, contract, formattedEndDate, duration, barSize, whatToShow, useRTH, formatDate, false, TagValueListSPtr());
         return waitForData();
     } catch (const std::exception& e) {
@@ -345,8 +346,8 @@ bool DailyDataFetcher::requestDailyData(const std::string& symbol, const std::st
 int DailyDataFetcher::calculateDurationInDays(const std::string& startDate, const std::string& endDate) {
     std::tm tm_start = {}, tm_end = {};
     std::istringstream ss_start(startDate), ss_end(endDate);
-    ss_start >> std::get_time(&tm_start, "%Y-%m-%d");
-    ss_end >> std::get_time(&tm_end, "%Y-%m-%d");
+    ss_start >> std::get_time(&tm_start, "%Y%m%d");
+    ss_end >> std::get_time(&tm_end, "%Y%m%d");
     
     std::time_t time_start = std::mktime(&tm_start);
     std::time_t time_end = std::mktime(&tm_end);

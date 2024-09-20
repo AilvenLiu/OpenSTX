@@ -88,6 +88,7 @@ private:
     void maintainConnection();
     bool requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);
     bool requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
+    std::string formatDateString(const std::string& date);
     std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
     std::string calculateStartDateFromDuration(const std::string& duration);
     std::string getCurrentDate();
