@@ -292,3 +292,28 @@ const std::string TimescaleDB::getFirstDailyStartDate(const std::string &symbol)
     return ""; // Return empty string if no data is found or error occurs
 }
 
+std::vector<std::map<std::string, double>> TimescaleDB::getRecentHistoricalData(const std::string &symbol, int period) {
+    std::vector<std::map<std::string, double>> historicalData;
+
+    try {
+        pqxx::work txn(*conn);
+        std::string query = "SELECT date, close, volume FROM daily_data WHERE symbol = " + txn.quote(symbol) + " ORDER BY date DESC LIMIT " + std::to_string(period) + ";";
+        pqxx::result result = txn.exec(query);
+
+        for (const auto &row : result) {
+            std::map<std::string, double> data;
+            data["date"] = row["date"].as<double>();  // Assuming date is stored as a double (timestamp)
+            data["close"] = row["close"].as<double>();
+            data["volume"] = row["volume"].as<double>();
+            historicalData.push_back(data);
+        }
+
+        // Reverse the order to have the oldest data first
+        std::reverse(historicalData.begin(), historicalData.end());
+    } catch (const std::exception &e) {
+        STX_LOGE(logger, "Error fetching recent historical data from TimescaleDB: " + std::string(e.what()));
+    }
+
+    return historicalData;
+}
+

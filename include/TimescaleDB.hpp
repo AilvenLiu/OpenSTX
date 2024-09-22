@@ -50,6 +50,8 @@ public:
     const std::string getLastDailyEndDate(const std::string &symbol);
     const std::string getFirstDailyStartDate(const std::string &symbol);
 
+    std::vector<std::map<std::string, double>> getRecentHistoricalData(const std::string &symbol, int period);
+
 private:
     void connectToDatabase();
     void createDatabase(const std::string &dbname, const std::string &user, const std::string &password, const std::string &host, const std::string &port);
