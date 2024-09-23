@@ -15,6 +15,7 @@ echo "Using OpenSTX executable: $EXECUTABLE"
 
 # Kill OpenSTX process
 pkill -f "$EXECUTABLE"
+pkill -f "OpenSTX"
 
 # Kill the monitoring script (run_stx.sh)
 pkill -f "run_stx.sh"

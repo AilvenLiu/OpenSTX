@@ -41,6 +41,16 @@
 #include "Logger.hpp"
 #include "TimescaleDB.hpp"
 
+struct DataItem {
+    std::string date;
+    std::map<std::string, std::variant<double, std::string>> data;
+};
+
+struct CompareDataItem {
+    bool operator()(const DataItem& a, const DataItem& b) const {
+        return a.date > b.date;
+    }
+};
 
 class DailyDataFetcher : public EWrapper {
 public:
@@ -63,7 +73,7 @@ private:
     int m_nextValidId = 0;
 
     std::vector<std::map<std::string, std::variant<double, std::string>>> historicalDataBuffer;
-    std::queue<std::tuple<std::string, std::map<std::string, std::variant<double, std::string>>>> dataQueue;
+    std::priority_queue<DataItem, std::vector<DataItem>, CompareDataItem> dataQueue;
 
     std::thread databaseThread;
     std::thread readerThread;
@@ -96,18 +106,15 @@ private:
     bool connectToIB(int maxRetries = 3, int retryDelayMs = 2000);
     bool waitForData(); 
     void maintainConnection();
-    bool requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate);
     bool requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize);
     std::string formatDateString(const std::string& date);
     std::vector<std::pair<std::string, std::string>> splitDateRange(const std::string& startDate, const std::string& endDate);
     void storeDailyData(const std::string& symbol, const std::map<std::string, std::variant<double, std::string>>& historicalData);
 
-    int calculateTradingDays(const std::string& startDate, const std::string& endDate);
     std::string calculateStartDateFromDuration(const std::string& duration);
     std::string getCurrentDate();
     std::string getNextDay(const std::string& date);
-    bool isMarketClosed(const std::tm& date, const std::tm& startDate, const std::tm& endDate);
-    std::tm calculateEaster(int year);
+    bool isMarketClosed(const std::tm& date);
 
     void writeToDatabaseFunc();
     void addToQueue(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData);

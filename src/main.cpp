@@ -87,7 +87,7 @@ int main(int argc, char* argv[]) {
     // Register signal handler
     std::signal(SIGINT, signalHandler);
 
-    LogLevel logLevel = INFO;  // Default log level
+    LogLevel logLevel = INFO;
 
     if (argc >= 2) {
         std::string logLevelStr = argv[1];

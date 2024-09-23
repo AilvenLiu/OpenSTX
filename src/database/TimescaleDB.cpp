@@ -221,7 +221,7 @@ bool TimescaleDB::insertRealTimeData(const std::string &datetime, const json &l1
 }
 
 bool TimescaleDB::insertOrUpdateDailyData(const std::string &date, const std::map<std::string, std::variant<double, std::string>> &dailyData) {
-    STX_LOGI(logger, "Inserting or updating daily data for date " + date);
+    STX_LOGD(logger, "Inserting or updating daily data for date " + date);
     try {
         pqxx::work txn(*conn);
 
@@ -248,7 +248,7 @@ bool TimescaleDB::insertOrUpdateDailyData(const std::string &date, const std::ma
 
         txn.exec(query);
         txn.commit();
-        STX_LOGI(logger, "Inserted or updated daily data for date " + date);
+        STX_LOGD(logger, "Inserted or updated " + std::get<std::string>(dailyData.at("symbol")) + " for date " + date);
         return true;
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error inserting or updating daily data into TimescaleDB: " + std::string(e.what()));
@@ -297,12 +297,26 @@ std::vector<std::map<std::string, double>> TimescaleDB::getRecentHistoricalData(
 
     try {
         pqxx::work txn(*conn);
+        
+        std::string checkTableQuery = "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'daily_data');";
+        pqxx::result tableExists = txn.exec(checkTableQuery);
+        
+        if (!tableExists[0][0].as<bool>()) {
+            STX_LOGW(logger, "Table 'daily_data' does not exist.");
+            return historicalData;  // Return empty vector
+        }
+
         std::string query = "SELECT date, close, volume FROM daily_data WHERE symbol = " + txn.quote(symbol) + " ORDER BY date DESC LIMIT " + std::to_string(period) + ";";
         pqxx::result result = txn.exec(query);
 
+        if (result.empty()) {
+            STX_LOGW(logger, "No historical data found for symbol: " + symbol);
+            return historicalData;  // Return empty vector
+        }
+
         for (const auto &row : result) {
             std::map<std::string, double> data;
-            data["date"] = row["date"].as<double>();  // Assuming date is stored as a double (timestamp)
+            data["date"] = row["date"].as<double>();
             data["close"] = row["close"].as<double>();
             data["volume"] = row["volume"].as<double>();
             historicalData.push_back(data);
@@ -310,6 +324,10 @@ std::vector<std::map<std::string, double>> TimescaleDB::getRecentHistoricalData(
 
         // Reverse the order to have the oldest data first
         std::reverse(historicalData.begin(), historicalData.end());
+
+        if (historicalData.size() < period) {
+            STX_LOGW(logger, "Insufficient historical data for symbol: " + symbol + ". Requested: " + std::to_string(period) + ", Found: " + std::to_string(historicalData.size()));
+        }
     } catch (const std::exception &e) {
         STX_LOGE(logger, "Error fetching recent historical data from TimescaleDB: " + std::string(e.what()));
     }
