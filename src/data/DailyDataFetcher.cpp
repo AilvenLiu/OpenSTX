@@ -824,9 +824,6 @@ double DailyDataFetcher::calculateMomentum(const std::string& symbol, double clo
 void DailyDataFetcher::addToQueue(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
     dataQueue.emplace(date, historicalData);
     STX_LOGD(logger, date + " written into dataQueue, " + std::to_string(dataQueue.size()) + " items inside");
-    if (dataQueue.size() > 100) {
-        STX_LOGF(logger, "Size of dataQueue larger than 10, please check the status and procedure of writting data into database immediately!");
-    }
     queueCV.notify_one();
 }
 
