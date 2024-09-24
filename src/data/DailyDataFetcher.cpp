@@ -190,7 +190,14 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     if (databaseThread.joinable()) {
         databaseThread.join();
     }
-    databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+    
+    try {
+        databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+        STX_LOGI(logger, "Database thread started successfully.");
+    } catch (const std::exception& e) {
+        STX_LOGE(logger, "Failed to start database thread: " + std::string(e.what()));
+        return false;
+    }
 
     std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
     clientLock.lock();
@@ -199,7 +206,7 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         clientLock.unlock();
         return true;
     }
-    STX_LOGI(logger, "start DailyDataFetcher collection ...");
+    STX_LOGI(logger, "Start DailyDataFetcher collection ...");
     running.store(true);
     clientLock.unlock();
 
@@ -748,35 +755,45 @@ void DailyDataFetcher::addToQueue(const std::string& date, const std::map<std::s
 }
 
 void DailyDataFetcher::writeToDatabaseFunc() {
-    STX_LOGI(logger, "writeToDatabaseThread started.");
-    while (running.load() || !dataQueue.empty()) {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        queueCV.wait(lock, [this] { return !dataQueue.empty() || !running.load(); });
+    try {
+        STX_LOGI(logger, "writeToDatabaseThread started.");
+        while (running.load() || !dataQueue.empty()) {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            if (!queueCV.wait_for(lock, std::chrono::seconds(10), [this] { return !dataQueue.empty() || !running.load(); })) {
+                STX_LOGW(logger, "writeToDatabaseFunc wait timed out.");
+                continue;
+            }
 
-        while (!dataQueue.empty()) {
-            DataItem item = dataQueue.top();
-            dataQueue.pop();
-            lock.unlock(); // Unlock before database operations
+            while (!dataQueue.empty()) {
+                DataItem item = dataQueue.top();
+                dataQueue.pop();
+                lock.unlock(); // Unlock before database operations
 
-            try {
-                // Insert into database
-                if (db->insertOrUpdateDailyData(item.date, item.data)) {
-                    STX_LOGI(logger, std::get<std::string>(item.data.at("symbol")) + "-" + item.date + " has been written into db.");
-                } else {
-                    STX_LOGE(logger, "Failed to write data to db: " + std::get<std::string>(item.data.at("symbol")) + " " + item.date + ", will retry ...");
+                try {
+                    // Insert into database
+                    if (db->insertOrUpdateDailyData(item.date, item.data)) {
+                        STX_LOGI(logger, std::get<std::string>(item.data.at("symbol")) + "-" + item.date + " has been written into db.");
+                    } else {
+                        STX_LOGE(logger, "Failed to write data to db: " + std::get<std::string>(item.data.at("symbol")) + " " + item.date + ", will retry ...");
+                        // Reinsert the item for retry
+                        storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
+                        break; // Exit the loop to retry later
+                    }
+                } catch (const std::exception& e) {
+                    STX_LOGE(logger, "Exception while writing to DB: " + std::string(e.what()));
                     // Reinsert the item for retry
                     storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
                     break; // Exit the loop to retry later
                 }
-            } catch (const std::exception& e) {
-                STX_LOGE(logger, "Exception while writing to DB: " + std::string(e.what()));
-                // Reinsert the item for retry
-                storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
-                break; // Exit the loop to retry later
-            }
 
-            lock.lock(); // Re-lock for the next iteration
+                lock.lock(); // Re-lock for the next iteration
+            }
         }
+        STX_LOGI(logger, "writeToDatabaseThread exiting gracefully.");
+    } catch (const std::exception& e) {
+        STX_LOGE(logger, "Exception in writeToDatabaseFunc: " + std::string(e.what()));
+    } catch (...) {
+        STX_LOGE(logger, "Unknown exception in writeToDatabaseFunc.");
     }
 }
 
