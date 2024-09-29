@@ -768,7 +768,7 @@ void DailyDataFetcher::writeToDatabaseFunc() {
                 DataItem item = dataQueue.top();
                 dataQueue.pop();
                 lock.unlock(); // Unlock before database operations
-
+#ifndef __TEST__
                 try {
                     // Insert into database
                     if (db->insertOrUpdateDailyData(item.date, item.data)) {
@@ -785,7 +785,9 @@ void DailyDataFetcher::writeToDatabaseFunc() {
                     storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
                     break; // Exit the loop to retry later
                 }
-
+#else
+                STX_LOGI(logger, "Simulated writeToDatabaseFunc: " + item.date + " has been written into db.");
+#endif
                 lock.lock(); // Re-lock for the next iteration
             }
         }
