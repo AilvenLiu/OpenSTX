@@ -21,7 +21,14 @@ def main():
     db_config = read_db_config()
     symbols = ["SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"]
     
-    data_loader = AsyncDataLoader(symbols, db_config, load_from_memory=False)
+    custom_columns = ['date', 'symbol', 'open', 'high', 'low', 'close', 'volume', 'sma', 'ema', 'rsi', 'macd', 'vwap', 'momentum']
+
+    data_loader = AsyncDataLoader(
+        symbols=symbols,
+        db_config=db_config,
+        columns=custom_columns
+    )
+    
     data_loader.start()
     
     try:

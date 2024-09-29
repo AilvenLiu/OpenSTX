@@ -49,12 +49,8 @@ def generate_trading_signals(predictions, actual_prices, data, short_window=40, 
     
     features = []
     for i in range(len(predictions)):
-        if i < long_window:
-            signals.append("hold")
-            continue
-        
-        short_moving_avg = np.mean(actual_prices[i-short_window:i])
-        long_moving_avg = np.mean(actual_prices[i-long_window:i])
+        short_moving_avg = np.mean(actual_prices[max(0, i-short_window):i+1])
+        long_moving_avg = np.mean(actual_prices[max(0, i-long_window):i+1])
         
         features.append([
             short_moving_avg,

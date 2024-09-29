@@ -21,6 +21,7 @@
 
 #include <numeric>
 #include <cmath>
+#include <numeric>
 #include <thread>
 #include <chrono>
 #include <future>
@@ -266,37 +267,31 @@ void RealTimeData::tickSize(TickerId tickerId, TickType field, Decimal size) {
 }
 
 void RealTimeData::updateMktDepth(TickerId id, int position, int operation, int side, double price, Decimal size) {
-    if (position >= rawL2Data.size()) {
-        rawL2Data.resize(position + 1);
-    }
+    std::string sideStr = side == 0 ? "Buy" : "Sell";
 
     switch (operation) {
-        case 0: // Insert
-            rawL2Data.insert(rawL2Data.begin() + position, {price, size, side == 0 ? "Buy" : "Sell"});
-            STX_LOGD(logger, "Market depth inserted: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Insert\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 0:
+            rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
             break;
-        case 1: // Update
-            rawL2Data[position] = {price, size, side == 0 ? "Buy" : "Sell"};
-            STX_LOGD(logger, "Market depth updated: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Update\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 1:
+            if (!rawL2Data[position].empty()) {
+                auto& latest = rawL2Data[position].back();
+                if (latest.status != "Deleted") {
+                    latest.price = price;
+                    latest.volume = size;
+                    latest.status = "Updated";
+                } else {
+                    rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
+                }
+            } else {
+                rawL2Data[position].emplace_back(price, size, sideStr, "Inserted");
+            }
             break;
-        case 2: // Delete
-            rawL2Data[position] = {0.0, 0, "Deleted"};
-            STX_LOGD(logger, "Market depth deleted: {\"TickerId\": " + std::to_string(id) + 
-                     ", \"Position\": " + std::to_string(position) + 
-                     ", \"Operation\": \"Delete\"" + 
-                     ", \"Side\": " + (side == 0 ? "Buy" : "Sell") + 
-                     ", \"Price\": " + std::to_string(price) + 
-                     ", \"Size\": " + DecimalFunctions::decimalToString(size) + "}");
+        case 2: 
+            if (!rawL2Data[position].empty()) {
+                auto& latest = rawL2Data[position].back();
+                latest.status = "Deleted";
+            }
             break;
         default:
             STX_LOGW(logger, "Unknown operation in updateMktDepth: " + std::to_string(operation));
@@ -312,12 +307,15 @@ void RealTimeData::aggregateMinuteData() {
     }
 
     swapBuffers();
+    moveDeletedItemsToBuffer();
+    updateHistoricalData();
+    
     STX_LOGI(logger, "Aggregating minute data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + 
              ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + 
-             ", Raw L2 Data count: " + std::to_string(rawL2DataBuffer.size()));
+             ", Raw L2 Data count: " + std::to_string(countL2data(rawL2DataBuffer)));
 
     try {
-        json l1Data, l2Data;
+        json l1Data, l2Data, features;
         
         auto l1Future = std::async(std::launch::async, [this]() {
             return this->aggregateL1Data();
@@ -329,17 +327,17 @@ void RealTimeData::aggregateMinuteData() {
 
         l1Data = l1Future.get();
         l2Data = l2Future.get();
+        features = calculateFeatures(l1Data, l2Data);
 
-        clearBufferData();
-        
-        auto features = calculateFeatures(l1Data, l2Data);
-        
         std::string datetime = getCurrentDateTime();
 #ifndef __TEST__
         addToQueue(datetime, l1Data, l2Data, features);
 #endif
         writeToSharedMemory(createCombinedJson(datetime, l1Data, l2Data, features));
+
+        clearBufferData();
     } catch (const std::exception &e) {
+        clearBufferData();
         STX_LOGE(logger, "Error in aggregateMinuteData: " + std::string(e.what()));
     }
 }
@@ -371,11 +369,17 @@ json RealTimeData::aggregateL1Data() {
 json RealTimeData::aggregateL2Data() {
     double minPrice = std::numeric_limits<double>::max();
     double maxPrice = std::numeric_limits<double>::lowest();
+    std::map<int, L2DataPoint> currentState;
 
-    for (const auto& data : rawL2DataBuffer) {
-        if (data.side == "Deleted" || data.price == 0.0) continue; // Skip deleted entries
-        minPrice = std::min(minPrice, data.price);
-        maxPrice = std::max(maxPrice, data.price);
+    for (const auto& [position, dataPoints] : rawL2DataBuffer) {
+        if (dataPoints.empty()) continue;
+
+        for (const auto& data : dataPoints) {
+            if (data.price == 0.0) continue;
+
+            minPrice = std::min(minPrice, data.price);
+            maxPrice = std::max(maxPrice, data.price);
+        }
     }
 
     double interval = (maxPrice - minPrice) / 20;
@@ -393,15 +397,20 @@ json RealTimeData::aggregateL2Data() {
     json l2DataJson = json::array();
     std::vector<std::pair<Decimal, Decimal>> priceLevelBuckets(20, {0, 0});
 
-    for (const auto& data : rawL2DataBuffer) {
-        if (data.side == "Deleted" || data.price == 0.0) continue; // Skip deleted entries
-        int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
-        bucketIndex = std::clamp(bucketIndex, 0, 19);
+    for (const auto& [position, dataPoints] : rawL2DataBuffer) {
+        if (dataPoints.empty()) continue;
 
-        if (data.side == "Buy") {
-            priceLevelBuckets[bucketIndex].first = DecimalFunctions::add(priceLevelBuckets[bucketIndex].first, data.volume);
-        } else {
-            priceLevelBuckets[bucketIndex].second = DecimalFunctions::add(priceLevelBuckets[bucketIndex].second, data.volume);
+        for (const auto& data : dataPoints) {
+            if (data.price == 0.0) continue;
+
+            int bucketIndex = static_cast<int>((data.price - minPrice) / interval);
+            bucketIndex = std::clamp(bucketIndex, 0, 19);
+
+            if (data.side == "Buy") {
+                priceLevelBuckets[bucketIndex].first = DecimalFunctions::add(priceLevelBuckets[bucketIndex].first, data.volume);
+            } else {
+                priceLevelBuckets[bucketIndex].second = DecimalFunctions::add(priceLevelBuckets[bucketIndex].second, data.volume);
+            }
         }
     }
 
@@ -409,15 +418,28 @@ json RealTimeData::aggregateL2Data() {
         double midPrice = minPrice + (i + 0.5) * interval;
         json level = {
             {"Price", midPrice},
-            {"BuyVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].first)},
-            {"SellVolume", DecimalFunctions::decimalToDouble(priceLevelBuckets[i].second)}
+            {"BuyVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].first)},
+            {"SellVolume", DecimalFunctions::decimalToString(priceLevelBuckets[i].second)}
         };
         l2DataJson.push_back(level);
     }
 
-    STX_LOGD(logger, l2DataJson.dump());
-
     return l2DataJson;
+}
+
+void RealTimeData::updateHistoricalData() {
+    if (!l1PricesBuffer.empty()) {
+        double closePrice = l1PricesBuffer.back();
+        Decimal totalVolume = std::accumulate(l1VolumesBuffer.begin(), l1VolumesBuffer.end(), Decimal(0), DecimalFunctions::add);
+        
+        historicalClosePrices.push_back(closePrice);
+        historicalVolumes.push_back(DecimalFunctions::decimalToDouble(totalVolume));
+        
+        if (historicalClosePrices.size() > MAX_HISTORY_SIZE) {
+            historicalClosePrices.pop_front();
+            historicalVolumes.pop_front();
+        }
+    }
 }
 
 json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
@@ -425,7 +447,7 @@ json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
     std::future<double> buySellRatioFuture = std::async(std::launch::async, &RealTimeData::calculateBuySellRatio, this);
     std::future<Decimal> depthChangeFuture = std::async(std::launch::async, &RealTimeData::calculateDepthChange, this);
     Decimal volume = DecimalFunctions::stringToDecimal(l1Data["Volume"].get<std::string>());
-    std::future<double> impliedLiquidityFuture = std::async(std::launch::async, &RealTimeData::calculateImpliedLiquidity, this, DecimalFunctions::decimalToDouble(volume), l2Data.size());
+    std::future<double> impliedLiquidityFuture = std::async(std::launch::async, &RealTimeData::calculateImpliedLiquidity, this);
     std::future<double> priceMomentumFuture = std::async(std::launch::async, &RealTimeData::calculatePriceMomentum, this);
     std::future<double> tradeDensityFuture = std::async(std::launch::async, &RealTimeData::calculateTradeDensity, this);
     std::future<double> rsiFuture = std::async(std::launch::async, &RealTimeData::calculateRSI, this);
@@ -445,7 +467,7 @@ json RealTimeData::calculateFeatures(const json& l1Data, const json& l2Data) {
     return {
         {"WeightedAvgPrice", weightedAvgPrice},
         {"BuySellRatio", buySellRatio},
-        {"DepthChange", DecimalFunctions::decimalToDouble(depthChange)},
+        {"DepthChange", DecimalFunctions::decimalToString(depthChange)},
         {"ImpliedLiquidity", impliedLiquidity},
         {"PriceMomentum", priceMomentum},
         {"TradeDensity", tradeDensity},
@@ -495,43 +517,58 @@ std::string RealTimeData::createCombinedJson(const std::string& datetime, const 
 }
 
 void RealTimeData::swapBuffers() {
-    std::unique_lock<std::mutex> bufferLock(bufferMutex, std::defer_lock);
     std::unique_lock<std::mutex> dataLock(dataMutex, std::defer_lock);
-    bufferLock.lock();
     dataLock.lock();
     std::swap(l1Prices, l1PricesBuffer);
     std::swap(l1Volumes, l1VolumesBuffer);
-    std::swap(rawL2Data, rawL2DataBuffer);
-    bufferLock.unlock();
     dataLock.unlock();
 }
 
+void RealTimeData::moveDeletedItemsToBuffer() {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    for (auto& [position, dataPoints] : rawL2Data) {
+        auto it = std::stable_partition(dataPoints.begin(), dataPoints.end(),
+            [](const L2DataPoint& point) { return point.status != "Deleted"; });
+        
+        rawL2DataBuffer[position].insert(rawL2DataBuffer[position].end(),
+            std::make_move_iterator(it), std::make_move_iterator(dataPoints.end()));
+        
+        dataPoints.erase(it, dataPoints.end());
+    }
+}
+
 void RealTimeData::clearBufferData() {
-    std::unique_lock<std::mutex> bufferLock(bufferMutex, std::defer_lock);
-    bufferLock.lock();
-    STX_LOGI(logger, "Clearing buffer data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + ", Raw L2 Data count: " + std::to_string(rawL2DataBuffer.size()));
+    STX_LOGI(logger, "Clearing buffer data. L1 Prices count: " + std::to_string(l1PricesBuffer.size()) + ", L1 Volumes count: " + std::to_string(l1VolumesBuffer.size()) + ", Raw L2 Data count: " + std::to_string(countL2data(rawL2DataBuffer)));
     l1PricesBuffer.clear();
     l1VolumesBuffer.clear();
     rawL2DataBuffer.clear();
-    bufferLock.unlock();
 }
 
 void RealTimeData::clearTemporaryData() {
     std::unique_lock<std::mutex> dataLock(dataMutex, std::defer_lock);
     dataLock.lock();
-    STX_LOGI(logger, "Clearing temporary data. L1 Prices count: " + std::to_string(l1Prices.size()) + ", L1 Volumes count: " + std::to_string(l1Volumes.size()) + ", Raw L2 Data count: " + std::to_string(rawL2Data.size()));
+    STX_LOGI(logger, "Clearing temporary data. L1 Prices count: " + std::to_string(l1Prices.size()) + ", L1 Volumes count: " + std::to_string(l1Volumes.size()) + ", Raw L2 Data count: " + std::to_string(countL2data(rawL2Data)));
     l1Prices.clear();
     l1Volumes.clear();
     rawL2Data.clear();
     dataLock.unlock();
 }
 
+int RealTimeData::countL2data(const std::map<int, std::vector<L2DataPoint>>& l2data) const {
+    return std::accumulate(l2data.begin(), l2data.end(), 0,
+        [](int sum, const auto& pair) {
+            return sum + pair.second.size();
+        });
+}
+
 double RealTimeData::calculateWeightedAveragePrice() const {
+    if (l1PricesBuffer.empty() || l1VolumesBuffer.empty()) return 0.0;
+
     Decimal totalWeightedPrice = 0;
     Decimal totalVolume = 0;
-    for (size_t i = 0; i < l1Prices.size(); ++i) {
-        totalWeightedPrice = DecimalFunctions::add(totalWeightedPrice, DecimalFunctions::mul(DecimalFunctions::doubleToDecimal(l1Prices[i]), l1Volumes[i]));
-        totalVolume = DecimalFunctions::add(totalVolume, l1Volumes[i]);
+    for (size_t i = 0; i < l1PricesBuffer.size(); ++i) {
+        totalWeightedPrice = DecimalFunctions::add(totalWeightedPrice, DecimalFunctions::mul(DecimalFunctions::doubleToDecimal(l1PricesBuffer[i]), l1VolumesBuffer[i]));
+        totalVolume = DecimalFunctions::add(totalVolume, l1VolumesBuffer[i]);
     }
     return totalVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalWeightedPrice, totalVolume));
 }
@@ -539,11 +576,17 @@ double RealTimeData::calculateWeightedAveragePrice() const {
 double RealTimeData::calculateBuySellRatio() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
-    for (const auto& level : rawL2Data) {
-        if (level.side == "Buy") {
-            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
-        } else {
-            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
+    for (const auto& [position, dataPoints] : rawL2DataBuffer) {
+        if (dataPoints.empty()) continue;
+
+        for (const auto& data : dataPoints) {
+            if (data.price == 0.0) continue;
+
+            if (data.side == "Buy") {
+                totalBuyVolume = DecimalFunctions::add(totalBuyVolume, data.volume);
+            } else {
+                totalSellVolume = DecimalFunctions::add(totalSellVolume, data.volume);
+            }
         }
     }
     return totalSellVolume == 0 ? 0.0 : DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalBuyVolume, totalSellVolume));
@@ -552,39 +595,72 @@ double RealTimeData::calculateBuySellRatio() const {
 Decimal RealTimeData::calculateDepthChange() const {
     Decimal totalBuyVolume = 0;
     Decimal totalSellVolume = 0;
+    for (const auto& [position, dataPoints] : rawL2DataBuffer) {
+        if (dataPoints.empty()) continue;
 
-    for (const auto& level : rawL2Data) {
-        if (level.side == "Buy") {
-            totalBuyVolume = DecimalFunctions::add(totalBuyVolume, level.volume);
-        } else if (level.side == "Sell") {
-            totalSellVolume = DecimalFunctions::add(totalSellVolume, level.volume);
+        for (const auto& data : dataPoints) {
+            if (data.price == 0.0) continue;
+
+            if (data.side == "Buy") {
+                totalBuyVolume = DecimalFunctions::add(totalBuyVolume, data.volume);
+            } else if (data.side == "Sell") {
+                totalSellVolume = DecimalFunctions::add(totalSellVolume, data.volume);
+            }
         }
     }
-
     return DecimalFunctions::sub(totalBuyVolume, totalSellVolume);
 }
 
-double RealTimeData::calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const {
-    return totalL2Volume / (priceLevelCount + 1e-6);
+double RealTimeData::calculateImpliedLiquidity() const {
+    double totalBuyVolume = 0.0;
+    double totalSellVolume = 0.0;
+    double highestBid = std::numeric_limits<double>::lowest();
+    double lowestAsk = std::numeric_limits<double>::max();
+
+    for (const auto& [position, dataPoints] : rawL2DataBuffer) {
+        if (dataPoints.empty()) continue;
+
+        for (const auto& data : dataPoints) {
+            if (data.price == 0.0) continue;
+
+            if (data.side == "Buy") {
+                totalBuyVolume += DecimalFunctions::decimalToDouble(data.volume);
+                highestBid = std::max(highestBid, data.price);
+            } else if (data.side == "Sell") {
+                totalSellVolume += DecimalFunctions::decimalToDouble(data.volume);
+                lowestAsk = std::min(lowestAsk, data.price);
+            }
+        }
+    }
+
+    double averageBuyVolume = totalBuyVolume / rawL2DataBuffer.size();
+    double averageSellVolume = totalSellVolume / rawL2DataBuffer.size();
+    double spread = lowestAsk - highestBid;
+
+    if (spread <= 0) {
+        return 0.0;
+    }
+
+    return (averageBuyVolume + averageSellVolume) / spread;
 }
 
 double RealTimeData::calculatePriceMomentum() const {
-    if (l1Prices.size() < 2) return 0.0;
-    return l1Prices.back() - l1Prices.front();
+    if (historicalClosePrices.size() < 2) return 0.0;
+    return historicalClosePrices.back() - historicalClosePrices.front();
 }
 
 double RealTimeData::calculateTradeDensity() const {
-    if (l1Volumes.empty()) return 0.0;
-    Decimal totalVolume = std::accumulate(l1Volumes.begin(), l1Volumes.end(), Decimal(0), DecimalFunctions::add);
-    return DecimalFunctions::decimalToDouble(DecimalFunctions::div(totalVolume, DecimalFunctions::doubleToDecimal(l1Volumes.size())));
+    if (historicalVolumes.empty()) return 0.0;
+    double totalVolume = std::accumulate(historicalVolumes.begin(), historicalVolumes.end(), 0.0);
+    return totalVolume / historicalVolumes.size();
 }
 
 double RealTimeData::calculateRSI() const {
-    if (l1Prices.size() < 2) return 50.0;
+    if (historicalClosePrices.size() < 15) return 50.0;
 
     double gains = 0.0, losses = 0.0;
-    for (size_t i = 1; i < l1Prices.size(); ++i) {
-        double change = l1Prices[i] - l1Prices[i - 1];
+    for (size_t i = historicalClosePrices.size() - 14; i < historicalClosePrices.size(); ++i) {
+        double change = historicalClosePrices[i] - historicalClosePrices[i - 1];
         if (change > 0) {
             gains += change;
         } else {
@@ -592,12 +668,14 @@ double RealTimeData::calculateRSI() const {
         }
     }
 
-    double rs = (losses == 0) ? gains : gains / losses;
+    double avgGain = gains / 14;
+    double avgLoss = losses / 14;
+    double rs = (avgLoss == 0) ? avgGain : avgGain / avgLoss;
     return 100.0 - (100.0 / (1.0 + rs));
 }
 
 double RealTimeData::calculateMACD() const {
-    if (l1Prices.size() < 26) return 0.0;
+    if (historicalClosePrices.size() < 26) return 0.0;
 
     double shortEMA = calculateEMA(12);
     double longEMA = calculateEMA(26);
@@ -606,30 +684,30 @@ double RealTimeData::calculateMACD() const {
 }
 
 double RealTimeData::calculateEMA(int period) const {
-    if (l1Prices.size() < period) return l1Prices.back();
+    if (historicalClosePrices.size() < period) return historicalClosePrices.back();
 
     double multiplier = 2.0 / (period + 1);
-    double ema = l1Prices[l1Prices.size() - period];
+    double ema = std::accumulate(historicalClosePrices.end() - period, historicalClosePrices.end(), 0.0) / period;
 
-    for (size_t i = l1Prices.size() - period + 1; i < l1Prices.size(); ++i) {
-        ema = (l1Prices[i] - ema) * multiplier + ema;
+    for (auto it = historicalClosePrices.end() - period; it != historicalClosePrices.end(); ++it) {
+        ema = (*it - ema) * multiplier + ema;
     }
 
     return ema;
 }
 
 double RealTimeData::calculateVWAP() const {
-    if (l1Prices.empty() || l1Volumes.empty()) return 0.0;
+    if (historicalClosePrices.empty() || historicalVolumes.empty()) return 0.0;
 
     double cumulativePriceVolume = 0.0;
     double cumulativeVolume = 0.0;
 
-    for (size_t i = 0; i < l1Prices.size(); ++i) {
-        cumulativePriceVolume += l1Prices[i] * l1Volumes[i];
-        cumulativeVolume += l1Volumes[i];
+    for (size_t i = 0; i < historicalClosePrices.size(); ++i) {
+        cumulativePriceVolume += historicalClosePrices[i] * historicalVolumes[i];
+        cumulativeVolume += historicalVolumes[i];
     }
 
-    return cumulativePriceVolume / cumulativeVolume;
+    return cumulativeVolume == 0 ? 0.0 : cumulativePriceVolume / cumulativeVolume;
 }
 
 void RealTimeData::nextValidId(OrderId orderId) {

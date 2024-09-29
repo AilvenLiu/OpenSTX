@@ -26,6 +26,8 @@
 #include <stdexcept>
 #include <chrono>
 #include <thread>
+#include <ctime>
+#include <set>
 
 #include "DailyDataFetcher.hpp"
 
@@ -188,7 +190,14 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     if (databaseThread.joinable()) {
         databaseThread.join();
     }
-    databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+    
+    try {
+        databaseThread = std::thread(&DailyDataFetcher::writeToDatabaseFunc, this);
+        STX_LOGI(logger, "Database thread started successfully.");
+    } catch (const std::exception& e) {
+        STX_LOGE(logger, "Failed to start database thread: " + std::string(e.what()));
+        return false;
+    }
 
     std::unique_lock<std::mutex> clientLock(clientMutex, std::defer_lock);
     clientLock.lock();
@@ -197,7 +206,7 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
         clientLock.unlock();
         return true;
     }
-    STX_LOGI(logger, "start DailyDataFetcher collection ...");
+    STX_LOGI(logger, "Start DailyDataFetcher collection ...");
     running.store(true);
     clientLock.unlock();
 
@@ -211,7 +220,6 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     std::this_thread::sleep_for(std::chrono::seconds(5));
     STX_LOGI(logger, "Start to request daily data.");
 
-    
     std::vector<std::string> symbols;
     if (symbol == "ALL") {
         symbols = {"SPY", "QQQ", "XLK", "AAPL", "MSFT", "AMZN", "GOOGL", "TSLA", "NVDA", "META", "AMD", "ADBE", "CRM", "SHOP"};
@@ -239,27 +247,19 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
                 if (firstDate.empty()) {
                     startDateTime = tenYearsAgo;
                 } else {
-                    startDateTime = lastDate;
+                    startDateTime = getNextDay(lastDate);
                 }
             } else {
-                startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
+                startDateTime = calculateStartDateFromDuration(duration.empty() ? "10Y" : duration);
             }
+            initializeIndicatorData(sym, maxPeriod);
 #else
-            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10 Y" : duration);
+            startDateTime = calculateStartDateFromDuration(duration.empty() ? "10Y" : duration);
 #endif
 
-            auto dateRanges = splitDateRange(startDateTime, endDateTime);
-            STX_LOGW(logger, "data to be requested: from " + dateRanges.front().first + " to " + dateRanges.back().second);
-
-            for (const auto& range : dateRanges) {
-                if (!running.load()) break;
-
-                if (!requestAndProcessWeeklyData(sym, range.first, range.second)) {
-                    success = false;
-                    break;
-                }
-
-                std::this_thread::sleep_for(std::chrono::seconds(2));
+            if (!requestDailyData(sym, startDateTime, endDateTime, "1 day")) {
+                success = false;
+                break;
             }
 
             STX_LOGI(logger, "Completed fetching and processing historical data for symbol: " + sym);
@@ -279,79 +279,92 @@ bool DailyDataFetcher::fetchAndProcessDailyData(const std::string& symbol, const
     return true;
 }
 
-bool DailyDataFetcher::requestAndProcessWeeklyData(const std::string& symbol, const std::string& startDate, const std::string& endDate) {
-    STX_LOGI(logger, "Requesting weekly data for " + symbol + " from " + startDate + " to " + endDate);
-
-    const int maxRetries = 3;
-    int retryCount = 0;
-    bool success = false;
-
-    while (retryCount < maxRetries) {
-        if (requestDailyData(symbol, startDate, endDate, "1 day")) {
-            success = true;
-            break;
-        } else {
-            STX_LOGE(logger, "Failed to request daily data for " + symbol + " from " + startDate + " to " + endDate + ". Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
-            retryCount++;
-            std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait before retrying
-        }
-    }
-
-    if (!success) {
-        STX_LOGE(logger, "Failed to request daily data for " + symbol + " after " + std::to_string(maxRetries) + " retries.");
-        return false;
-    }
-
-    for (const auto& data : historicalDataBuffer) {
-        storeDailyData(symbol, data);
-    }
-
-    historicalDataBuffer.clear();
-    return true;
-}
-
 bool DailyDataFetcher::requestDailyData(const std::string& symbol, const std::string& startDate, const std::string& endDate, const std::string& barSize) {
     if (!client || !client->isConnected()) {
         STX_LOGE(logger, "Not connected to IB TWS. Cannot request historical data.");
         return false;
     }
 
-    Contract contract;
-    contract.symbol = symbol;
-    contract.secType = "STK";
-    contract.exchange = "SMART";
-    contract.currency = "USD";
-
-    std::string whatToShow = "TRADES";
-    bool useRTH = true;
-    int formatDate = 1;
-
-    // Format the end date correctly
-    std::string formattedEndDate = endDate + " 23:59:59 US/Eastern";
-
-    // Calculate the duration
-    int durationDays = calculateDurationInDays(startDate, endDate);
-    std::string duration = std::to_string(durationDays) + " D";
-
-    try {
-        client->reqHistoricalData(nextRequestId++, contract, formattedEndDate, duration, barSize, whatToShow, useRTH, formatDate, false, TagValueListSPtr());
-        return waitForData();
-    } catch (const std::exception& e) {
-        STX_LOGE(logger, "Exception while requesting historical data: " + std::string(e.what()));
-        return false;
-    }
-}
-
-int DailyDataFetcher::calculateDurationInDays(const std::string& startDate, const std::string& endDate) {
     std::tm tm_start = {}, tm_end = {};
     std::istringstream ss_start(startDate), ss_end(endDate);
-    ss_start >> std::get_time(&tm_start, "%Y-%m-%d");
-    ss_end >> std::get_time(&tm_end, "%Y-%m-%d");
-    
+    ss_start >> std::get_time(&tm_start, "%Y%m%d");
+    ss_end >> std::get_time(&tm_end, "%Y%m%d");
+
+    if (ss_start.fail() || ss_end.fail()) {
+        STX_LOGE(logger, "Date parsing failed for startDate: " + startDate + ", endDate: " + endDate);
+        return false;
+    }
+
+    STX_LOGI(logger, "Requesting daily data " + symbol + " from " + startDate + " to " + endDate);
+
     std::time_t time_start = std::mktime(&tm_start);
     std::time_t time_end = std::mktime(&tm_end);
-    
-    return static_cast<int>(std::difftime(time_end, time_start) / (60 * 60 * 24)) + 1;
+
+    while (time_start <= time_end) {
+        std::tm* tm = std::localtime(&time_start);
+        char dateStr[11];
+        std::strftime(dateStr, sizeof(dateStr), "%Y%m%d", tm);
+
+        if (isMarketClosed(*tm)) {
+            STX_LOGD(logger, "Skipping closed market day: " + std::string(dateStr));
+            time_start += 24 * 60 * 60; // Move to the next day
+            continue;
+        }
+
+        const int maxRetries = 3;
+        int retryCount = 0;
+        bool success = false;
+
+        while (retryCount < maxRetries) {
+            try {
+                Contract contract;
+                contract.symbol = symbol;
+                contract.secType = "STK";
+                contract.exchange = "SMART";
+                contract.currency = "USD";
+
+                std::string whatToShow = "TRADES";
+                bool useRTH = true;
+                int formatDate = 1;
+
+                std::string formattedEndDate = std::string(dateStr) + " 23:59:59 US/Eastern";
+                std::string duration = "1 D";
+
+                STX_LOGD(logger, "Requesting data for " + symbol + " on " + dateStr);
+                client->reqHistoricalData(nextRequestId++, contract, formattedEndDate, duration, barSize, whatToShow, useRTH, formatDate, false, TagValueListSPtr());
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                
+                if (waitForData()) {
+                    success = true;
+                    break;
+                } else {
+                    STX_LOGE(logger, "Failed to request daily data for " + symbol + " on " + dateStr + ". Retry " + std::to_string(retryCount + 1) + " of " + std::to_string(maxRetries));
+                    retryCount++;
+                    std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait before retrying
+                }
+            } catch (const std::exception& e) {
+                STX_LOGE(logger, "Exception while requesting daily data: " + std::string(e.what()));
+                retryCount++;
+                std::this_thread::sleep_for(std::chrono::seconds(5)); // Wait before retrying
+            }
+        }
+
+        if (!success) {
+            STX_LOGE(logger, "Failed to request daily data for " + symbol + " on " + dateStr + " after " + std::to_string(maxRetries) + " retries.");
+        } else {
+            // Process the data if received
+            if (!historicalDataBuffer.empty()) {
+                for (const auto& data : historicalDataBuffer) {
+                    storeDailyData(symbol, data);
+                }
+                historicalDataBuffer.clear();
+            }
+        }
+
+        time_start += 24 * 60 * 60; // Move to the next day
+    }
+
+    return true;
 }
 
 bool DailyDataFetcher::waitForData() {
@@ -377,6 +390,14 @@ void DailyDataFetcher::historicalData(TickerId reqId, const Bar& bar) {
     data["close"] = bar.close;
     data["volume"] = DecimalFunctions::decimalToDouble(bar.volume);
 
+    std::string detail = "date: " + std::get<std::string>(data["date"]);
+    detail += ", open: " + std::to_string(std::get<double>(data["open"]));
+    detail += ", high: " + std::to_string(std::get<double>(data["high"]));
+    detail += ", low: " + std::to_string(std::get<double>(data["low"]));
+    detail += ", close: " + std::to_string(std::get<double>(data["close"]));
+    detail += ", volume: " + std::to_string(std::get<double>(data["volume"]));
+    STX_LOGD(logger, "Historical data received: " + detail);
+
     historicalDataBuffer.push_back(data);
 }
 
@@ -384,6 +405,9 @@ void DailyDataFetcher::historicalDataEnd(int reqId, const std::string& startDate
     std::unique_lock<std::mutex> lock(cvMutex);
     dataReceived = true;
     cv.notify_one();
+    
+    STX_LOGD(logger, "Historical data reception ended for request ID: " + std::to_string(reqId) + 
+                     ", from: " + startDateStr + " to: " + endDateStr);
 }
 
 void DailyDataFetcher::error(int id, int errorCode, const std::string &errorString, const std::string &advancedOrderRejectJson) {
@@ -453,19 +477,19 @@ void DailyDataFetcher::storeDailyData(const std::string& symbol, const std::map<
     double close = std::get<double>(dbData["close"]);
     double volume = std::get<double>(dbData["volume"]);
 
-    if (std::get<double>(dbData["sma"]) == 0.0) dbData["sma"] = calculateSMA(symbol, close);
-    if (std::get<double>(dbData["ema"]) == 0.0) dbData["ema"] = calculateEMA(symbol, close);
-    if (std::get<double>(dbData["rsi"]) == 0.0) dbData["rsi"] = calculateRSI(symbol, close);
-    if (std::get<double>(dbData["macd"]) == 0.0) dbData["macd"] = calculateMACD(symbol, close);
-    if (std::get<double>(dbData["vwap"]) == 0.0) dbData["vwap"] = calculateVWAP(symbol, volume, close);
-    if (std::get<double>(dbData["momentum"]) == 0.0) dbData["momentum"] = calculateMomentum(symbol, close);
+    // Use adj_close if provided, otherwise use close
+    double adjClose = (historicalData.find("adj_close") != historicalData.end()) ? std::get<double>(historicalData.at("adj_close")) : close;
 
-    // If adj_close is not provided, use regular close
-    if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = close;
+    if (std::get<double>(dbData["sma"]) == 0.0) dbData["sma"] = calculateSMA(symbol, adjClose);
+    if (std::get<double>(dbData["ema"]) == 0.0) dbData["ema"] = calculateEMA(symbol, adjClose);
+    if (std::get<double>(dbData["rsi"]) == 0.0) dbData["rsi"] = calculateRSI(symbol, adjClose);
+    if (std::get<double>(dbData["macd"]) == 0.0) dbData["macd"] = calculateMACD(symbol, adjClose);
+    if (std::get<double>(dbData["vwap"]) == 0.0) dbData["vwap"] = calculateVWAP(symbol, volume, adjClose);
+    if (std::get<double>(dbData["momentum"]) == 0.0) dbData["momentum"] = calculateMomentum(symbol, adjClose);
 
-#ifndef __TEST__
+    if (std::get<double>(dbData["adj_close"]) == 0.0) dbData["adj_close"] = adjClose;
+
     addToQueue(date, dbData);
-#endif
 }
 
 std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRange(const std::string& startDate, const std::string& endDate) {
@@ -474,14 +498,19 @@ std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRang
     std::tm endTm = {};
 
     std::istringstream ssStart(startDate);
-    ssStart >> std::get_time(&startTm, "%Y-%m-%d");
+    ssStart >> std::get_time(&startTm, "%Y%m%d");
 
     std::istringstream ssEnd(endDate);
-    ssEnd >> std::get_time(&endTm, "%Y-%m-%d");
+    ssEnd >> std::get_time(&endTm, "%Y%m%d");
+
+    if (ssStart.fail() || ssEnd.fail()) {
+        STX_LOGE(logger, "Date parsing failed for startDate: " + startDate + ", endDate: " + endDate);
+        return dateRanges; // Return empty vector on failure
+    }
 
     while (std::difftime(std::mktime(&endTm), std::mktime(&startTm)) > 0) {
         std::tm nextTm = startTm;
-        nextTm.tm_mday += 7;
+        nextTm.tm_mday += 6;
         std::mktime(&nextTm);
 
         if (std::mktime(&nextTm) > std::mktime(&endTm)) {
@@ -493,12 +522,78 @@ std::vector<std::pair<std::string, std::string>> DailyDataFetcher::splitDateRang
         ossEnd << std::put_time(&nextTm, "%Y%m%d");
 
         dateRanges.emplace_back(ossStart.str(), ossEnd.str());
-
+        
+        nextTm.tm_mday += 1;
         startTm = nextTm;
         std::mktime(&startTm);
     }
 
     return dateRanges;
+}
+
+
+bool DailyDataFetcher::isMarketClosed(const std::tm& date) {
+    // Check if the current date is within the specified range
+    std::time_t t_date = std::mktime(const_cast<std::tm*>(&date));
+    
+    char dateStr[11];
+    std::strftime(dateStr, sizeof(dateStr), "%Y-%m-%d", &date);
+
+    // Check for weekends
+    if (date.tm_wday == 0 || date.tm_wday == 6) {
+        STX_LOGD(logger, "Market closed: Weekend on " + std::string(dateStr));
+        return true;
+    }
+
+    // New Year's Day (January 1st)
+    if (date.tm_mon == 0 && date.tm_mday == 1) {
+        STX_LOGW(logger, "Market closed: New Year's Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Martin Luther King Jr. Day (Third Monday in January)
+    if (date.tm_mon == 0 && date.tm_wday == 1 && (date.tm_mday >= 15 && date.tm_mday <= 21)) {
+        STX_LOGW(logger, "Market closed: Martin Luther King Jr. Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Presidents' Day (Third Monday in February)
+    if (date.tm_mon == 1 && date.tm_wday == 1 && (date.tm_mday >= 15 && date.tm_mday <= 21)) {
+        STX_LOGW(logger, "Market closed: Presidents' Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Memorial Day (Last Monday in May)
+    if (date.tm_mon == 4 && date.tm_wday == 1 && date.tm_mday >= 25) {
+        STX_LOGW(logger, "Market closed: Memorial Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Independence Day (July 4th)
+    if (date.tm_mon == 6 && date.tm_mday == 4) {
+        STX_LOGW(logger, "Market closed: Independence Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Labor Day (First Monday in September)
+    if (date.tm_mon == 8 && date.tm_wday == 1 && date.tm_mday <= 7) {
+        STX_LOGW(logger, "Market closed: Labor Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Thanksgiving Day (Fourth Thursday in November)
+    if (date.tm_mon == 10 && date.tm_wday == 4 && (date.tm_mday >= 22 && date.tm_mday <= 28)) {
+        STX_LOGW(logger, "Market closed: Thanksgiving Day on " + std::string(dateStr));
+        return true;
+    }
+
+    // Christmas Day (December 25th)
+    if (date.tm_mon == 11 && date.tm_mday == 25) {
+        STX_LOGW(logger, "Market closed: Christmas Day on " + std::string(dateStr));
+        return true;
+    }
+
+    return false;
 }
 
 std::string DailyDataFetcher::calculateStartDateFromDuration(const std::string& duration) {
@@ -519,7 +614,7 @@ std::string DailyDataFetcher::calculateStartDateFromDuration(const std::string& 
     }
 
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d");
+    oss << std::put_time(&tm, "%Y%m%d");
     return oss.str();
 }
 
@@ -527,55 +622,67 @@ std::string DailyDataFetcher::getCurrentDate() {
     std::time_t t = std::time(nullptr);
     std::tm tm = *std::localtime(&t);
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d");
+    oss << std::put_time(&tm, "%Y%m%d");
     std::string current_date = oss.str();
     STX_LOGI(logger, "current date: " + current_date);
     return current_date;
 }
 
+std::string DailyDataFetcher::getNextDay(const std::string& date) {
+    std::tm tm = {};
+    std::istringstream ss(date);
+    
+    ss >> std::get_time(&tm, "%Y-%m-%d");
+    
+    if (ss.fail()) {
+        ss.clear();
+        ss.str(date);
+        ss >> std::get_time(&tm, "%Y%m%d");
+    }
+    
+    if (ss.fail()) {
+        throw std::runtime_error("Failed to parse date: " + date);
+    }
+
+    // Increment the day by one
+    tm.tm_mday += 1;
+    std::mktime(&tm); // Normalize the date
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y%m%d");
+    return oss.str();
+}
+
 // Helper functions: Calculate SMA, EMA, RSI, MACD, VWAP, Momentum
 double DailyDataFetcher::calculateSMA(const std::string& symbol, double close, int period) {
-    static std::map<std::string, std::deque<double>> closingPrices;
     closingPrices[symbol].push_back(close);
 
-    if (closingPrices[symbol].size() > period) {
+    while (closingPrices[symbol].size() > period) {
         closingPrices[symbol].pop_front();
     }
 
     if (closingPrices[symbol].size() < period) {
-        return close;  // Return current price if not enough data
+        return close;
     }
 
-    return std::accumulate(closingPrices[symbol].begin(), closingPrices[symbol].end(), 0.0) / period;
+    double sum = std::accumulate(closingPrices[symbol].begin(), closingPrices[symbol].end(), 0.0);
+    return sum / period;
 }
 
 double DailyDataFetcher::calculateEMA(const std::string& symbol, double close, int period) {
-    static std::map<std::string, double> emaValues;
-    static std::map<std::string, int> dataPoints;
-
     double multiplier = 2.0 / (period + 1);
 
-    if (emaValues.find(symbol) == emaValues.end() || dataPoints[symbol] == 0) {
-        emaValues[symbol] = close;
-        dataPoints[symbol] = 1;
+    if (emaDataPoints[symbol] < period) {
+        return calculateSMA(symbol, close, period);
     } else {
         emaValues[symbol] = (close - emaValues[symbol]) * multiplier + emaValues[symbol];
-        dataPoints[symbol]++;
-    }
-
-    // Return SMA if we don't have enough data points for EMA
-    if (dataPoints[symbol] < period) {
-        return calculateSMA(symbol, close, period);
+        emaDataPoints[symbol]++;
     }
 
     return emaValues[symbol];
 }
 
 double DailyDataFetcher::calculateRSI(const std::string& symbol, double close, int period) {
-    static std::map<std::string, std::deque<double>> gains;
-    static std::map<std::string, std::deque<double>> losses;
-    static std::map<std::string, double> lastClose;
-
     if (lastClose.find(symbol) == lastClose.end()) {
         lastClose[symbol] = close;
         return 50.0;  // Default to neutral RSI if it's the first data point
@@ -609,16 +716,13 @@ double DailyDataFetcher::calculateMACD(const std::string& symbol, double close) 
     const int shortPeriod = 12;
     const int longPeriod = 26;
 
-    double shortEMA = calculateEMA(symbol + "_short", close, shortPeriod);
-    double longEMA = calculateEMA(symbol + "_long", close, longPeriod);
+    double shortEMA = calculateEMA(symbol, close, shortPeriod);
+    double longEMA = calculateEMA(symbol, close, longPeriod);
 
     return shortEMA - longEMA;
 }
 
 double DailyDataFetcher::calculateVWAP(const std::string& symbol, double volume, double close) {
-    static std::map<std::string, double> cumulativePriceVolume;
-    static std::map<std::string, double> cumulativeVolume;
-
     cumulativePriceVolume[symbol] += close * volume;
     cumulativeVolume[symbol] += volume;
 
@@ -630,48 +734,135 @@ double DailyDataFetcher::calculateVWAP(const std::string& symbol, double volume,
 }
 
 double DailyDataFetcher::calculateMomentum(const std::string& symbol, double close, int period) {
-    static std::map<std::string, std::deque<double>> priceHistory;
 
-    priceHistory[symbol].push_back(close);
-
-    if (priceHistory[symbol].size() > period) {
-        priceHistory[symbol].pop_front();
+    if (closingPrices[symbol].size() < period) {
+        return 0.0;
     }
 
-    if (priceHistory[symbol].size() < period) {
-        return 0.0;  // Not enough data
-    }
-
-    return close - priceHistory[symbol].front();
+    return close - closingPrices[symbol].front();
 }
 
 void DailyDataFetcher::addToQueue(const std::string& date, const std::map<std::string, std::variant<double, std::string>>& historicalData) {
+    DataItem item;
+    item.date = date;
+    item.data = historicalData;
     {
         std::lock_guard<std::mutex> lock(queueMutex);
-        dataQueue.emplace(date, historicalData);
-        STX_LOGD(logger, date + " written into dataQueue, " + std::to_string(dataQueue.size()) + " items inside");
-        if (dataQueue.size() > 5) {
-            STX_LOGF(logger, "Size of dataQueue larger than 5, please check the status and procedure of writting data into database immediately!");
-        }
+        dataQueue.push(item);
     }
+    STX_LOGD(logger, date + " written into dataQueue, " + std::to_string(dataQueue.size()) + " items inside");
     queueCV.notify_one();
 }
 
 void DailyDataFetcher::writeToDatabaseFunc() {
-    STX_LOGI(logger, "writeToDatabaseThread started.");
-    while (running.load() || !dataQueue.empty()) {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        queueCV.wait(lock, [this] { return !dataQueue.empty() || !running.load(); });
+    try {
+        STX_LOGI(logger, "writeToDatabaseThread started.");
+        while (running.load() || !dataQueue.empty()) {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            if (!queueCV.wait_for(lock, std::chrono::seconds(10), [this] { return !dataQueue.empty() || !running.load(); })) {
+                STX_LOGW(logger, "writeToDatabaseFunc wait timed out.");
+                continue;
+            }
 
-        while (!dataQueue.empty()) {
-            auto [date, data] = dataQueue.front();
-            if (db->insertOrUpdateDailyData(date, data)) {
+            while (!dataQueue.empty()) {
+                DataItem item = dataQueue.top();
                 dataQueue.pop();
-                STX_LOGD(logger, "Written into database successfully, pop head item from data queue.");
-            } else {
-                STX_LOGE(logger, "Failed to write data to db: " + std::get<std::string>(data["symbol"]) + " " + date + ", will retry ...");
-                break; // Exit the loop to retry later
+                lock.unlock(); // Unlock before database operations
+#ifndef __TEST__
+                try {
+                    // Insert into database
+                    if (db->insertOrUpdateDailyData(item.date, item.data)) {
+                        STX_LOGI(logger, std::get<std::string>(item.data.at("symbol")) + "-" + item.date + " has been written into db.");
+                    } else {
+                        STX_LOGE(logger, "Failed to write data to db: " + std::get<std::string>(item.data.at("symbol")) + " " + item.date + ", will retry ...");
+                        // Reinsert the item for retry
+                        storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
+                        break; // Exit the loop to retry later
+                    }
+                } catch (const std::exception& e) {
+                    STX_LOGE(logger, "Exception while writing to DB: " + std::string(e.what()));
+                    // Reinsert the item for retry
+                    storeDailyData(std::get<std::string>(item.data.at("symbol")), item.data);
+                    break; // Exit the loop to retry later
+                }
+#else
+                STX_LOGI(logger, "Simulated writeToDatabaseFunc: " + item.date + " has been written into db.");
+#endif
+                lock.lock(); // Re-lock for the next iteration
             }
         }
+        STX_LOGI(logger, "writeToDatabaseThread exiting gracefully.");
+    } catch (const std::exception& e) {
+        STX_LOGE(logger, "Exception in writeToDatabaseFunc: " + std::string(e.what()));
+    } catch (...) {
+        STX_LOGE(logger, "Unknown exception in writeToDatabaseFunc.");
+    }
+}
+
+std::string DailyDataFetcher::convertDateToIBFormat(const std::string& date) {
+    std::tm tm = {};
+    std::istringstream ss(date);
+    
+    ss >> std::get_time(&tm, "%Y-%m-%d");
+    
+    if (ss.fail()) {
+        ss.clear();
+        ss.str(date);
+        ss >> std::get_time(&tm, "%Y%m%d");
+    }
+    
+    if (ss.fail()) {
+        throw std::runtime_error("Failed to parse date: " + date);
+    }
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y%m%d");
+    return oss.str();
+}
+
+void DailyDataFetcher::initializeIndicatorData(const std::string& symbol, int period) {
+    std::vector<std::map<std::string, double>> historicalData = db->getRecentHistoricalData(symbol, period);
+
+    if (historicalData.empty()) {
+        STX_LOGW(logger, "No historical data available for " + symbol + ". Skipping indicator initialization.");
+        return;
+    }
+
+    // Initialize closingPrices and related variables
+    for (const auto& data : historicalData) {
+        double close = data.at("close");
+        closingPrices[symbol].push_back(close);
+
+        if (closingPrices[symbol].size() > period) {
+            closingPrices[symbol].pop_front();
+        }
+
+        // Initialize EMA values
+        if (emaDataPoints[symbol] == 0) {
+            emaValues[symbol] = close;
+            emaDataPoints[symbol] = 1;
+        } else {
+            double multiplier = 2.0 / (period + 1);
+            emaValues[symbol] = (close - emaValues[symbol]) * multiplier + emaValues[symbol];
+            emaDataPoints[symbol]++;
+        }
+
+        // Initialize gains and losses for RSI
+        if (lastClose.find(symbol) != lastClose.end()) {
+            double change = close - lastClose[symbol];
+            gains[symbol].push_back(std::max(change, 0.0));
+            losses[symbol].push_back(std::max(-change, 0.0));
+
+            if (gains[symbol].size() > period) {
+                gains[symbol].pop_front();
+                losses[symbol].pop_front();
+            }
+        }
+        lastClose[symbol] = close;
+
+        // Initialize cumulative volumes for VWAP
+        double volume = data.at("volume");
+        cumulativePriceVolume[symbol] += close * volume;
+        cumulativeVolume[symbol] += volume;
     }
 }

@@ -4,7 +4,7 @@ def preprocess_data(df):
     df['date'] = pd.to_datetime(df['date'])
     df.set_index('date', inplace=True)
     df.sort_index(inplace=True)
-    df.dropna(inplace=True)
+    df.index.freq = pd.infer_freq(df.index)  # Set frequency
     return df
 
 def preprocess_symbol_data(df, symbol):

@@ -65,10 +65,11 @@ private:
     struct L2DataPoint {
         double price;
         Decimal volume;
-        std::string side; // "Buy" or "Sell"
+        std::string side;
+        std::string status;
 
-        L2DataPoint() : price(0.0), volume(0), side("") {}
-        L2DataPoint(double p, Decimal v, const std::string& s) : price(p), volume(v), side(s) {}
+        L2DataPoint() : price(0.0), volume(0), side(""), status("") {}
+        L2DataPoint(double p, Decimal v, const std::string& s, const std::string& st) : price(p), volume(v), side(s), status(st) {}
     };
 
     std::shared_ptr<Logger> logger;
@@ -87,17 +88,19 @@ private:
 
     std::vector<double> l1Prices;
     std::vector<Decimal> l1Volumes;
-    std::vector<L2DataPoint> rawL2Data;
+    std::map<int, std::vector<L2DataPoint>> rawL2Data;
     std::vector<double> l1PricesBuffer;
     std::vector<Decimal> l1VolumesBuffer;
-    std::vector<L2DataPoint> rawL2DataBuffer;
+    std::map<int, std::vector<L2DataPoint>> rawL2DataBuffer;
     std::queue<std::tuple<std::string, json, json, json>> dataQueue;
+    std::deque<double> historicalClosePrices;
+    std::deque<double> historicalVolumes;
+    const size_t MAX_HISTORY_SIZE = 60; 
 
     std::condition_variable cv;
     std::condition_variable queueCV;
 
     std::mutex dataMutex;
-    std::mutex bufferMutex;
     std::mutex clientMutex;
     std::mutex readerMutex;
     std::mutex cvMutex;
@@ -121,6 +124,7 @@ private:
     void handleConnectionError(int errorCode);
     void handleRateLimitExceeded();
 
+    void updateHistoricalData();
     json calculateFeatures(const json& l1Data, const json& l2Data);
     std::string getCurrentDateTime() const;
     std::string createCombinedJson(const std::string& datetime, const json& l1Data, const json& l2Data, const json& features) const;
@@ -129,8 +133,11 @@ private:
     void writeToDatabaseFunc();
     
     void swapBuffers();
+    void moveDeletedItemsToBuffer();
     void clearBufferData();
     void clearTemporaryData();
+    int countL2data(const std::map<int, std::vector<L2DataPoint>>& l2data) const;
+
     void reconnect();
     void monitorDataFlow(int maxRetries, int retryDelayMs, int checkIntervalMs);
     void joinThreads();
@@ -138,7 +145,7 @@ private:
     double calculateWeightedAveragePrice() const;
     double calculateBuySellRatio() const;
     Decimal calculateDepthChange() const;
-    double calculateImpliedLiquidity(double totalL2Volume, size_t priceLevelCount) const;
+    double calculateImpliedLiquidity() const;
     double calculatePriceMomentum() const;
     double calculateTradeDensity() const;
     double calculateRSI() const;

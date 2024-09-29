@@ -11,4 +11,5 @@ arch
 tqdm
 psycopg2-binary
 sqlalchemy
+tenacity
 # brew install libomp

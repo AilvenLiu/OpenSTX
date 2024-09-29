@@ -10,7 +10,7 @@ def calculate_metrics(df):
     df['cumulative_strategy_returns'] = (1 + df['strategy_returns']).cumprod()
     
     # Calculate Sharpe ratio
-    sharpe_ratio = np.mean(df['strategy_returns']) / np.std(df['strategy_returns']) * np.sqrt(252)
+    sharpe_ratio = np.mean(df['strategy_returns']) / np.std(df['strategy_returns']) * np.sqrt(252) if np.std(df['strategy_returns']) != 0 else 0
     
     # Calculate maximum drawdown
     cumulative = df['cumulative_strategy_returns']
